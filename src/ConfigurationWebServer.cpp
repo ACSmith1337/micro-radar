@@ -43,7 +43,7 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                 </div>
 
                 <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-                    <span>Radius (in &deg;):</span>
+                    <span>Radius (in °):</span>
                     <input
                         name="radius"
                         type="number"
@@ -55,20 +55,66 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                 </label>
 
                 <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-                    <span>OpenSkyAPI Client ID:</span>
-                    <input
-                        name="opensky-id"
-                        value='%OPENSKY_ID%'
+                    <span>Data Source:</span>
+                    <select
+                        name="datasource"
                         class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
+                        <option value="opensky"%DS_OPENSKY%>OpenSky Network (rate-limited)</option>
+                        <option value="local"%DS_LOCAL%>Local readsb/dump1090 (real-time)</option>
+                    </select>
                 </label>
 
-                <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-                    <span>OpenSkyAPI Client Secret:</span>
-                    <input
-                        name="opensky-secret"
-                        value='%OPENSKY_SECRET%'
-                        class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
-                </label>
+                <fieldset id="local-fields" class="border border-green-700 p-3 flex flex-col gap-2">
+                    <legend class="px-2 text-xs">Local ADS-B Settings</legend>
+                    <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                        <span>readsb/dump1090 Host:</span>
+                        <input
+                            name="readsbhost"
+                            type="text"
+                            placeholder="e.g. 192.168.1.100"
+                            value='%READSBHOST%'
+                            class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
+                    </label>
+                    <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                        <span>Port:</span>
+                        <input
+                            name="readsbport"
+                            type="number"
+                            min="1"
+                            max="65535"
+                            value='%READSBPORT%'
+                            class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
+                    </label>
+                    <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                        <span>Fetch Interval (sec):</span>
+                        <input
+                            name="fetchinterval"
+                            type="number"
+                            min="1"
+                            max="60"
+                            step="0.5"
+                            value='%FETCHINTERVAL%'
+                            class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
+                    </label>
+                </fieldset>
+
+                <fieldset id="opensky-fields" class="border border-green-700 p-3 flex flex-col gap-2">
+                    <legend class="px-2 text-xs">OpenSky Network Settings</legend>
+                    <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                        <span>OpenSkyAPI Client ID:</span>
+                        <input
+                            name="opensky-id"
+                            value='%OPENSKY_ID%'
+                            class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
+                    </label>
+                    <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                        <span>OpenSkyAPI Client Secret:</span>
+                        <input
+                            name="opensky-secret"
+                            value='%OPENSKY_SECRET%'
+                            class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
+                    </label>
+                </fieldset>
 
                 <div class="flex flex-col sm:flex-row gap-4 sm:justify-between">
                     <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
@@ -115,6 +161,24 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                     .then(r => r.text())
                     .then(html => document.getElementById('result').innerHTML = html);
             });
+
+            // Show/hide settings sections based on selected data source
+            const ds = document.querySelector('select[name="datasource"]');
+            const localFields = document.getElementById('local-fields');
+            const openskyFields = document.getElementById('opensky-fields');
+
+            function toggleSections() {
+                if (ds.value === 'local') {
+                    localFields.style.display = 'flex';
+                    openskyFields.style.display = 'none';
+                } else {
+                    localFields.style.display = 'none';
+                    openskyFields.style.display = 'flex';
+                }
+            }
+
+            ds.addEventListener('change', toggleSections);
+            toggleSections(); // initial state
         </script>
     </body>
 </html>
@@ -140,16 +204,24 @@ void ConfigurationWebServer::Initialise() {
         const String scanlineEnabled = prefs.getString("scanline", "true");
         const String infoTextEnabled = prefs.getString("infotext", "true");
         const String triangleEnabled = prefs.getString("triangle", "true");
+        const String dataSource = prefs.getString("datasource", "opensky");
+        const String readsbHost = prefs.getString("readsbhost", "");
+        const String readsbPort = prefs.getString("readsbport", "8080");
+        const String fetchInterval = prefs.getString("fetchinterval", "3");
         prefs.end();
 
         // mask secret before sending to client
         std::fill(openskySecret.begin(), openskySecret.end(), '*');
 
+        // Determine which data source option is selected
+        const String dsOpenSky = dataSource == "opensky" ? "selected" : "";
+        const String dsLocal = dataSource == "local" ? "selected" : "";
+
         // template processor called once per %PLACEHOLDER% token found in CONFIG_HTML.
         AsyncWebServerResponse* response = request->beginResponse(
             200, "text/html",
             (const uint8_t*)CONFIG_HTML, sizeof(CONFIG_HTML) - 1,
-            [latitude, longitude, radius, openskyClientId, openskySecret, scanlineEnabled, infoTextEnabled, triangleEnabled]
+            [latitude, longitude, radius, openskyClientId, openskySecret, scanlineEnabled, infoTextEnabled, triangleEnabled, dsOpenSky, dsLocal, readsbHost, readsbPort, fetchInterval]
             (const String& var) -> String {
                 if (var == "LATITUDE")       return latitude;
                 if (var == "LONGITUDE")      return longitude;
@@ -159,6 +231,11 @@ void ConfigurationWebServer::Initialise() {
                 if (var == "SCANLINE")       return scanlineEnabled == "true" ? "checked" : "";
                 if (var == "INFOTEXT")       return infoTextEnabled == "true" ? "checked" : "";
                 if (var == "TRIANGLE")       return triangleEnabled == "true" ? "checked" : "";
+                if (var == "DS_OPENSKY")     return dsOpenSky;
+                if (var == "DS_LOCAL")       return dsLocal;
+                if (var == "READSBHOST")     return readsbHost;
+                if (var == "READSBPORT")     return readsbPort;
+                if (var == "FETCHINTERVAL")  return fetchInterval;
                 return "";
             }
         );
@@ -185,7 +262,11 @@ void ConfigurationWebServer::Initialise() {
         TrySaveParam("latitude");
         TrySaveParam("longitude");
         TrySaveParam("radius");
+        TrySaveParam("datasource");
         TrySaveParam("opensky-id");
+        TrySaveParam("readsbhost");
+        TrySaveParam("readsbport");
+        TrySaveParam("fetchinterval");
 
         const auto* param = request->getParam("opensky-secret", true);
         if (param != nullptr) {

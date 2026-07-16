@@ -18,7 +18,11 @@ private:
     bool displayInfoText = true;
     bool displayTriangles = true;
 
-    unsigned long fetchInterval = 0;
+    // Data source selection: "opensky" (default) or "local" (readsb/dump1090)
+    String dataSource = "opensky";
+
+    // Poll interval (ms) — OpenSky is ~60s, local readsb can be ~3s
+    unsigned long fetchInterval = 60000;
     unsigned long lastFetch = 999999;
 
     ConfigurationWebServer& configServer;
@@ -30,6 +34,12 @@ private:
     std::pair<int, int> ProjectCoordinateToScreen(float predLat, float predLon) const;
     void DrawAircraftInfo(LGFX_Sprite& backbuffer, int x, int y, const TrackedAircraft& tracked) const;
     void DrawAircraftTriangle(LGFX_Sprite& backbuffer, int x, int y, const TrackedAircraft& tracked) const;
+
+    // OpenSky fetch (existing)
+    void FetchOpenSky();
+
+    // Local readsb/dump1090 fetch
+    void FetchLocal();
 
 public:
     AircraftManager(ConfigurationWebServer& config, OpenSkyAuthTokenHandler& auth, HttpRequestManager& httpManager, LGFX& tftGfx)

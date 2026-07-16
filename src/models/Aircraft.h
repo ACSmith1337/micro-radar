@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <vector>
+#include <time.h>
 
 #include "JsonParser.h"
 
@@ -29,9 +30,57 @@ struct Aircraft {
     int    category;        // [17] aircraft category (0=unknown, see docs for full list)
 };
 
+// readsb / dump1090 aircraft.json format
+// Same internal fields as Aircraft so both sources feed the same TrackedAircraft pipeline
+struct AircraftReadsb {
+    String icao24;
+    String callsign;
+    String originCountry;
+    long   timePosition;
+    long   lastContact;
+    float  longitude;
+    float  latitude;
+    float  baroAltitude;       // metres
+    bool   onGround;
+    float  velocity;           // m/s
+    float  trueTrack;
+    float  verticalRate;       // m/s
+    float  geoAltitude;
+    String squawk;
+    bool   spi;
+    int    positionSource;
+    int    category;
+};
+
 namespace JsonParser {
 
     template<>
     Aircraft Parse<Aircraft>(const JsonVariant& state);
+
+    // Parse a readsb/dump1090 aircraft.json entry
+    AircraftReadsb ParseReadsbAircraft(const JsonVariant& ac);
+
+    // Convert readsb format to our internal Aircraft struct
+    inline Aircraft ToInternal(const AircraftReadsb& r) {
+        Aircraft a;
+        a.icao24 = r.icao24;
+        a.callsign = r.callsign;
+        a.originCountry = r.originCountry;
+        a.timePosition = r.timePosition;
+        a.lastContact = r.lastContact;
+        a.longitude = r.longitude;
+        a.latitude = r.latitude;
+        a.baroAltitude = r.baroAltitude;
+        a.onGround = r.onGround;
+        a.velocity = r.velocity;
+        a.trueTrack = r.trueTrack;
+        a.verticalRate = r.verticalRate;
+        a.geoAltitude = r.geoAltitude;
+        a.squawk = r.squawk;
+        a.spi = r.spi;
+        a.positionSource = r.positionSource;
+        a.category = r.category;
+        return a;
+    }
 
 }

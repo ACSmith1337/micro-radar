@@ -4,6 +4,7 @@ constexpr int SCREEN_SIZE = 240;
 constexpr int SCREEN_SIZE_DIV_2 = (SCREEN_SIZE / 2);
 
 #include <ArduinoJson.h>
+#include <time.h>
 
 void AircraftManager::Initialise()
 {
@@ -18,18 +19,42 @@ void AircraftManager::Initialise()
     if (!renderText.isEmpty()) displayInfoText = renderText == "true" ? true : false;
     if (!renderTris.isEmpty()) displayTriangles = renderTris == "true" ? true : false;
 
-    // calculate how often we can call OpenSky API before being rate limited
-    constexpr int MS_PER_DAY = 24 * 60 * 60 * 1000;
-    constexpr int ANONYMOUS_TOKENS_PER_DAY = 400;
-    constexpr int AUTHED_TOKENS_PER_DAY = 4000;
-    constexpr int TOKEN_BUFFER = 3;
-    int dailyRequestBudget = ANONYMOUS_TOKENS_PER_DAY - TOKEN_BUFFER; // non-authed tokens minus buffer
+    // data source
+    dataSource = configServer.GetStoredString("datasource");
+    if (dataSource.isEmpty()) dataSource = "opensky";
 
-    const String token = authHandler.GetValidToken(configServer.GetStoredString("opensky-id"), configServer.GetStoredString("opensky-secret"));
-    if (!token.isEmpty())
-        dailyRequestBudget = AUTHED_TOKENS_PER_DAY - TOKEN_BUFFER; // authed tokens minus buffer
+    // calculate fetch interval based on data source
+    if (dataSource == "local") {
+        // local readsb/dump1090 — configurable interval (default 3s)
+        String intervalStr = configServer.GetStoredString("fetchinterval");
+        if (!intervalStr.isEmpty()) {
+            fetchInterval = (unsigned long)(intervalStr.toFloat() * 1000.0f);
+        } else {
+            fetchInterval = 3000;
+        }
+    } else {
+        // OpenSky rate-limited fetch
+        constexpr int MS_PER_DAY = 24 * 60 * 60 * 1000;
+        constexpr int ANONYMOUS_TOKENS_PER_DAY = 400;
+        constexpr int AUTHED_TOKENS_PER_DAY = 4000;
+        constexpr int TOKEN_BUFFER = 3;
+        int dailyRequestBudget = ANONYMOUS_TOKENS_PER_DAY - TOKEN_BUFFER;
 
-    fetchInterval = MS_PER_DAY / dailyRequestBudget;
+        const String token = authHandler.GetValidToken(
+            configServer.GetStoredString("opensky-id"),
+            configServer.GetStoredString("opensky-secret")
+        );
+        if (!token.isEmpty())
+            dailyRequestBudget = AUTHED_TOKENS_PER_DAY - TOKEN_BUFFER;
+
+        fetchInterval = MS_PER_DAY / dailyRequestBudget;
+    }
+
+    Serial.print("[AircraftManager] Data source: ");
+    Serial.print(dataSource);
+    Serial.print(", fetch interval: ");
+    Serial.print(fetchInterval / 1000);
+    Serial.println("s");
 }
 
 void AircraftManager::Update()
@@ -40,41 +65,117 @@ void AircraftManager::Update()
     if (now - lastFetch >= fetchInterval) {
         lastFetch = now;
 
-        // auth
-        const String token = authHandler.GetValidToken(
-            configServer.GetStoredString("opensky-id"),
-            configServer.GetStoredString("opensky-secret")
-        );
+        if (dataSource == "local") {
+            FetchLocal();
+        } else {
+            FetchOpenSky();
+        }
+    }
+}
 
-        std::vector<std::pair<String, String>> headers = {};
-        if (!token.isEmpty()) headers.push_back({ "Authorization", "Bearer " + token });
+void AircraftManager::FetchOpenSky()
+{
+    // auth
+    const String token = authHandler.GetValidToken(
+        configServer.GetStoredString("opensky-id"),
+        configServer.GetStoredString("opensky-secret")
+    );
 
-        // request
-        HttpResult result = http.Get(
-            "https://opensky-network.org/api/states/all",
-            {
-              {"lamin", String(lat - rad)},
-              {"lamax", String(lat + rad)},
-              {"lomin", String(lon - rad)},
-              {"lomax", String(lon + rad)}
-            },
-            headers
-        );
+    std::vector<std::pair<String, String>> headers = {};
+    if (!token.isEmpty()) headers.push_back({ "Authorization", "Bearer " + token });
 
-        // If request failed, skip this update
-        if (!result.success) {
-            Serial.print("[WARN] OpenSky API request failed: ");
-            Serial.println(result.errorMessage);
-            return;
+    // request
+    HttpResult result = http.Get(
+        "https://opensky-network.org/api/states/all",
+        {
+          {"lamin", String(lat - rad)},
+          {"lamax", String(lat + rad)},
+          {"lomin", String(lon - rad)},
+          {"lomax", String(lon + rad)}
+        },
+        headers
+    );
+
+    // If request failed, skip this update
+    if (!result.success) {
+        Serial.print("[WARN] OpenSky API request failed: ");
+        Serial.println(result.errorMessage);
+        return;
+    }
+
+    // track
+    JsonDocument doc;
+    deserializeJson(doc, result.response);
+    auto aircraft = JsonParser::ParseArray<Aircraft>(doc["states"]);
+    now = millis(); // override with post-parse timestamp
+
+    for (auto& ac : aircraft) {
+        auto it = trackedAircraft.find(ac.icao24);
+        if (it == trackedAircraft.end())
+            trackedAircraft.emplace(ac.icao24, TrackedAircraft{ ac, now });
+        else
+            it->second.Update(ac, now);
+    }
+
+    // remove any planes that disappeared from the feed
+    for (auto it = trackedAircraft.begin(); it != trackedAircraft.end(); ) {
+        bool aircraftPresent = std::any_of(aircraft.begin(), aircraft.end(), [&](const Aircraft& ac) { return ac.icao24 == it->first; });
+        if (!aircraftPresent)
+            it = trackedAircraft.erase(it);
+        else
+            ++it;
+    }
+}
+
+void AircraftManager::FetchLocal()
+{
+    String host = configServer.GetStoredString("readsbhost");
+    if (host.isEmpty()) {
+        Serial.println("[WARN] readsb/dump1090 host not configured");
+        return;
+    }
+
+    String port = configServer.GetStoredString("readsbport");
+    if (port.isEmpty()) port = "8080";
+
+    String url = "http://" + host + ":" + port + "/data/aircraft.json";
+
+    HttpResult result = http.Get(url);
+
+    if (!result.success) {
+        Serial.print("[WARN] Local ADS-B request failed (");
+        Serial.print(url);
+        Serial.print("): ");
+        Serial.println(result.errorMessage);
+        return;
+    }
+
+    // Parse readsb/dump1090 aircraft.json
+    // Format: { "now": ..., "messages": ..., "aircraft": [ {...}, ... ] }
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, result.response);
+    if (err) {
+        Serial.print("[ERROR] JSON parse failed: ");
+        Serial.println(err.f_str());
+        return;
+    }
+
+    auto& aircraftArray = doc["aircraft"];
+    if (!aircraftArray.isNull()) {
+        std::vector<Aircraft> aircraft;
+        aircraft.reserve(aircraftArray.size());
+
+        for (auto item : aircraftArray) {
+            AircraftReadsb rs = JsonParser::ParseReadsbAircraft(item);
+            aircraft.push_back(JsonParser::ToInternal(rs));
         }
 
-        // track
-        JsonDocument doc;
-        deserializeJson(doc, result.response);
-        auto aircraft = JsonParser::ParseArray<Aircraft>(doc["states"]);
-        now = millis(); // override with post-parse timestamp
+        now = millis();
 
         for (auto& ac : aircraft) {
+            // Skip aircraft with no position
+            if (ac.latitude == 0.0f && ac.longitude == 0.0f) continue;
+
             auto it = trackedAircraft.find(ac.icao24);
             if (it == trackedAircraft.end())
                 trackedAircraft.emplace(ac.icao24, TrackedAircraft{ ac, now });

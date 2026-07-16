@@ -1,5 +1,10 @@
 #include "ConfigurationWebServer.h"
+
+#if defined(ARDUINO_ARCH_ESP32)
 #include <ESPmDNS.h>
+#elif defined(ARDUINO_ARCH_ESP8266)
+#include <ESP8266mDNS.h>
+#endif
 
 // HTML stored in flash
 // %PLACEHOLDER% tokens are substituted at serve time by the template processor

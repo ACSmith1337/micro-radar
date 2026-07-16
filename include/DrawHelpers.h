@@ -1,8 +1,7 @@
 #pragma once
-
 #include "LGFX.h"
 
-void DrawScanLines(LGFX_Sprite& buf, const int x0, const int y0, const int x1, const int y1, const int thickness, const int trailBrightness, const int spacing)
+void DrawScanLines(LGFX& buf, const int x0, const int y0, const int x1, const int y1, const int thickness, const int trailBrightness, const int spacing)
 {
     float dx = x1 - x0;
     float dy = y1 - y0;

@@ -107,7 +107,7 @@ void AircraftManager::FetchOpenSky()
     JsonDocument doc;
     deserializeJson(doc, result.response);
     auto aircraft = JsonParser::ParseArray<Aircraft>(doc["states"]);
-    now = millis(); // override with post-parse timestamp
+    unsigned long now = millis(); // post-parse timestamp
 
     for (auto& ac : aircraft) {
         auto it = trackedAircraft.find(ac.icao24);
@@ -170,7 +170,7 @@ void AircraftManager::FetchLocal()
             aircraft.push_back(JsonParser::ToInternal(rs));
         }
 
-        now = millis();
+        unsigned long now = millis();
 
         for (auto& ac : aircraft) {
             // Skip aircraft with no position
@@ -194,9 +194,9 @@ void AircraftManager::FetchLocal()
     }
 }
 
-void AircraftManager::Draw(LGFX_Sprite& backbuffer)
+void AircraftManager::Draw(LGFX& buf)
 {
-    DrawRadarCircles(backbuffer);
+    DrawRadarCircles(buf);
 
     for (auto& [icao, tracked] : trackedAircraft) {
         if (tracked.state.onGround) continue;
@@ -206,23 +206,23 @@ void AircraftManager::Draw(LGFX_Sprite& backbuffer)
         auto [x, y] = ProjectCoordinateToScreen(predLat, predLon);
 
         if (displayInfoText)
-            DrawAircraftInfo(backbuffer, x, y, tracked);
+            DrawAircraftInfo(buf, x, y, tracked);
 
         if (displayTriangles)
-            DrawAircraftTriangle(backbuffer, x, y, tracked);
+            DrawAircraftTriangle(buf, x, y, tracked);
         else
-            backbuffer.fillCircle(x, y, 3, lgfx::color888(0, 255, 0));
+            buf.fillCircle(x, y, 3, lgfx::color888(0, 255, 0));
     }
 }
 
-void AircraftManager::DrawRadarCircles(LGFX_Sprite& backbuffer) const
+void AircraftManager::DrawRadarCircles(LGFX& buf) const
 {
     constexpr int CENTRE = SCREEN_SIZE_DIV_2 - 1;
     constexpr int OUTER = SCREEN_SIZE_DIV_2 - 1;
 
-    backbuffer.drawCircle(CENTRE, CENTRE, OUTER, lgfx::color888(0, 200, 0));
-    backbuffer.drawCircle(CENTRE, CENTRE, (OUTER / 3) * 2, lgfx::color888(0, 64, 0));
-    backbuffer.drawCircle(CENTRE, CENTRE, OUTER / 3, lgfx::color888(0, 32, 0));
+    buf.drawCircle(CENTRE, CENTRE, OUTER, lgfx::color888(0, 200, 0));
+    buf.drawCircle(CENTRE, CENTRE, (OUTER / 3) * 2, lgfx::color888(0, 64, 0));
+    buf.drawCircle(CENTRE, CENTRE, OUTER / 3, lgfx::color888(0, 32, 0));
 }
 
 std::pair<int, int> AircraftManager::ProjectCoordinateToScreen(float predLat, float predLon) const
@@ -239,18 +239,18 @@ std::pair<int, int> AircraftManager::ProjectCoordinateToScreen(float predLat, fl
     return { x, y };
 }
 
-void AircraftManager::DrawAircraftInfo(LGFX_Sprite& backbuffer, int x, int y, const TrackedAircraft& tracked) const
+void AircraftManager::DrawAircraftInfo(LGFX& buf, int x, int y, const TrackedAircraft& tracked) const
 {
     const int lineHeight = tft.fontHeight() + 1;
 
-    backbuffer.setTextSize(1);
-    backbuffer.setTextColor(lgfx::color888(0, 128, 0));
-    backbuffer.drawString(tracked.state.callsign, x + 5, y + 5);
-    backbuffer.drawString(String(tracked.state.velocity) + "m/s", x + 5, y + 5 + lineHeight);
-    backbuffer.drawString(String(tracked.state.baroAltitude) + "m", x + 5, y + 5 + lineHeight * 2);
+    buf.setTextSize(1);
+    buf.setTextColor(lgfx::color888(0, 128, 0));
+    buf.drawString(tracked.state.callsign, x + 5, y + 5);
+    buf.drawString(String(tracked.state.velocity) + "m/s", x + 5, y + 5 + lineHeight);
+    buf.drawString(String(tracked.state.baroAltitude) + "m", x + 5, y + 5 + lineHeight * 2);
 }
 
-void AircraftManager::DrawAircraftTriangle(LGFX_Sprite& backbuffer, int x, int y, const TrackedAircraft& tracked) const
+void AircraftManager::DrawAircraftTriangle(LGFX& buf, int x, int y, const TrackedAircraft& tracked) const
 {
     const float dx = std::sin(radians(tracked.state.trueTrack));
     const float dy = -std::cos(radians(tracked.state.trueTrack));
@@ -267,5 +267,5 @@ void AircraftManager::DrawAircraftTriangle(LGFX_Sprite& backbuffer, int x, int y
     const float rightX = x - dx * TRIANGLE_LENGTH * 0.5f - px * TRIANGLE_WIDTH * 0.5f;
     const float rightY = y - dy * TRIANGLE_LENGTH * 0.5f - py * TRIANGLE_WIDTH * 0.5f;
 
-    backbuffer.fillTriangle(tipX, tipY, leftX, leftY, rightX, rightY, lgfx::color888(0, 255, 0));
+    buf.fillTriangle(tipX, tipY, leftX, leftY, rightX, rightY, lgfx::color888(0, 255, 0));
 }

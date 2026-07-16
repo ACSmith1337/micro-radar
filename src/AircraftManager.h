@@ -30,10 +30,10 @@ private:
     HttpRequestManager& http;
     LGFX& tft;
 
-    void DrawRadarCircles(LGFX_Sprite& backbuffer) const;
+    void DrawRadarCircles(LGFX& buf) const;
     std::pair<int, int> ProjectCoordinateToScreen(float predLat, float predLon) const;
-    void DrawAircraftInfo(LGFX_Sprite& backbuffer, int x, int y, const TrackedAircraft& tracked) const;
-    void DrawAircraftTriangle(LGFX_Sprite& backbuffer, int x, int y, const TrackedAircraft& tracked) const;
+    void DrawAircraftInfo(LGFX& buf, int x, int y, const TrackedAircraft& tracked) const;
+    void DrawAircraftTriangle(LGFX& buf, int x, int y, const TrackedAircraft& tracked) const;
 
     // OpenSky fetch (existing)
     void FetchOpenSky();
@@ -50,5 +50,5 @@ public:
 
     void Initialise();
     void Update();
-    void Draw(LGFX_Sprite& backbuffer);
+    void Draw(LGFX& buf);
 };

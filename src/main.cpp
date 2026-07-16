@@ -20,8 +20,6 @@ constexpr int SCREEN_SIZE = 240;
 constexpr int SCREEN_SIZE_DIV_2 = (SCREEN_SIZE / 2);
 
 LGFX tft;
-LGFX_Sprite backbuffer(&tft);
-
 WiFiManager wm;
 ConfigurationWebServer configServer;
 HttpRequestManager http;
@@ -29,60 +27,77 @@ OpenSkyAuthTokenHandler authHandler(http);
 
 AircraftManager aircraftManager(configServer, authHandler, http, tft);
 
+// Round panel corner masking — draws black circles to cover corners
+// that extend beyond the physical round bezel.
+void DrawRoundMask(LGFX& panel)
+{
+    constexpr int R = SCREEN_SIZE / 2;
+    panel.fillCircle(0, 0, R, lgfx::color888(0, 0, 0));
+    panel.fillCircle(SCREEN_SIZE - 1, 0, R, lgfx::color888(0, 0, 0));
+    panel.fillCircle(0, SCREEN_SIZE - 1, R, lgfx::color888(0, 0, 0));
+    panel.fillCircle(SCREEN_SIZE - 1, SCREEN_SIZE - 1, R, lgfx::color888(0, 0, 0));
+}
+
 void setup()
 {
-  Serial.begin(115200);
-  // delay(1000); // avoids immediate serial output being cut off - uncomment if needed
+    Serial.begin(115200);
 
-  // initialise LGFX + screen
-  tft.init();
-  tft.invertDisplay(true);
-  pinMode(3, OUTPUT);
-  digitalWrite(3, HIGH);
+    // initialise display
+    tft.init();
+    tft.invertDisplay(true);
 
-  backbuffer.setColorDepth(8);
-  backbuffer.createSprite(SCREEN_SIZE, SCREEN_SIZE);
+#if defined(ARDUINO_ARCH_ESP32)
+    pinMode(3, OUTPUT);
+    digitalWrite(3, HIGH);
+#endif
 
-  // establish WiFi connection
-  tft.fillScreen(lgfx::color888(0, 0, 0));
-  tft.setTextColor(lgfx::color888(0, 255, 0));
-  tft.drawCentreString("Connecting to WiFi...", SCREEN_SIZE / 2, SCREEN_SIZE / 2);
+#if defined(ARDUINO_ARCH_ESP8266)
+    // ESP8266 D1 Mini: pin D1 (GPIO5) = backlight
+    pinMode(5, OUTPUT);
+    digitalWrite(5, HIGH);
+#endif
 
-  WiFiManagerHelpers::ConfigureWiFiManager(wm, tft);
+    // establish WiFi connection
+    tft.fillScreen(lgfx::color888(0, 0, 0));
+    tft.setTextColor(lgfx::color888(0, 255, 0));
+    tft.drawCentreString("Connecting to WiFi...", SCREEN_SIZE / 2, SCREEN_SIZE / 2);
 
-  if (strlen(preconfiguredWifiSsid) > 0) {
-    WiFi.begin(preconfiguredWifiSsid, preconfiguredWifiPassword);
-    WiFi.waitForConnectResult();
-  }
+    WiFiManagerHelpers::ConfigureWiFiManager(wm, tft);
 
-  wm.autoConnect(WiFiManagerHelpers::WiFiManagerName);
+    if (strlen(preconfiguredWifiSsid) > 0) {
+        WiFi.begin(preconfiguredWifiSsid, preconfiguredWifiPassword);
+        WiFi.waitForConnectResult();
+    }
 
-  // begin background server for configuration
-  configServer.Initialise();
+    wm.autoConnect(WiFiManagerHelpers::WiFiManagerName);
 
-  // initialise aircraft manager
-  aircraftManager.Initialise();
+    // begin background server for configuration
+    configServer.Initialise();
+
+    // initialise aircraft manager
+    aircraftManager.Initialise();
 }
 
 void loop()
 {
-  aircraftManager.Update();
+    aircraftManager.Update();
 
-  // draw cycle
-  backbuffer.fillScreen(lgfx::color888(0, 0, 0));
+    // draw cycle
+    tft.fillScreen(lgfx::color888(0, 0, 0));
 
-  String renderScanlines = configServer.GetStoredString("scanline");
-  if (renderScanlines.isEmpty() || renderScanlines == "true") {
-    DrawScanLines(backbuffer,
-      SCREEN_SIZE_DIV_2 - 1,
-      SCREEN_SIZE_DIV_2 - 1,
-      SCREEN_SIZE_DIV_2 - 1 + (std::cos(millis() / 3000.0f) * SCREEN_SIZE_DIV_2),
-      SCREEN_SIZE_DIV_2 - 1 + (std::sin(millis() / 3000.0f) * SCREEN_SIZE_DIV_2),
-      20, 128, 5
-    );
-  }
+    // Mask round panel corners
+    DrawRoundMask(tft);
 
-  aircraftManager.Draw(backbuffer);
-  backbuffer.pushSprite(0, 0);
+    String renderScanlines = configServer.GetStoredString("scanline");
+    if (renderScanlines.isEmpty() || renderScanlines == "true") {
+        DrawScanLines(tft,
+          SCREEN_SIZE_DIV_2 - 1,
+          SCREEN_SIZE_DIV_2 - 1,
+          SCREEN_SIZE_DIV_2 - 1 + (std::cos(millis() / 3000.0f) * SCREEN_SIZE_DIV_2),
+          SCREEN_SIZE_DIV_2 - 1 + (std::sin(millis() / 3000.0f) * SCREEN_SIZE_DIV_2),
+          20, 128, 5
+        );
+    }
+
+    aircraftManager.Draw(tft);
 }
-

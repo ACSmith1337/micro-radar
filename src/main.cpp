@@ -23,16 +23,6 @@ HttpRequestManager http;
 
 AircraftManager aircraftManager(configServer, http, tft);
 
-// Round panel corner masking — draws black circles to cover corners
-// that extend beyond the physical round bezel.
-void DrawRoundMask(LGFX& panel)
-{
-    constexpr int R = SCREEN_SIZE / 2;
-    panel.fillCircle(0, 0, R, lgfx::color888(0, 0, 0));
-    panel.fillCircle(SCREEN_SIZE - 1, 0, R, lgfx::color888(0, 0, 0));
-    panel.fillCircle(0, SCREEN_SIZE - 1, R, lgfx::color888(0, 0, 0));
-    panel.fillCircle(SCREEN_SIZE - 1, SCREEN_SIZE - 1, R, lgfx::color888(0, 0, 0));
-}
 
 void setup()
 {
@@ -40,7 +30,7 @@ void setup()
 
     // initialise display
     tft.init();
-    tft.invertDisplay(true);
+    tft.invertDisplay(false);
 
 #if defined(ARDUINO_ARCH_ESP32)
     pinMode(3, OUTPUT);
@@ -73,8 +63,7 @@ void setup()
     // initialise aircraft manager (draws radar grid once)
     aircraftManager.Initialise();
 
-    // Mask round panel corners once
-    DrawRoundMask(tft);
+ 
 }
 
 void loop()

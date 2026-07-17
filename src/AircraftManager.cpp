@@ -207,6 +207,14 @@ void AircraftManager::DrawRadarFrame()
 
     // ── Redraw phosphor trail (15 thin segments, smooth gradient) ──
     DrawTrail(cx, cy, r, headC, headS);
+
+    // ── Bearing labels: redraw every frame so trail never erases them ──
+    tft.setTextColor(CLR_RING_BRIGHT);
+    tft.setTextSize(1);
+    tft.drawCentreString("N", cx, 0, 1);
+    tft.drawCentreString("S", cx, 236, 1);
+    tft.drawCentreString("E", 236, cy - 3, 1);
+    tft.drawCentreString("W", 4, cy - 3, 1);
 }
 
 // ── Draw phosphor trail: 30° behind scan line, 15 thin segments ──
@@ -314,15 +322,6 @@ void AircraftManager::DrawRadarGrid() const
     // ── North tick: longer mark extending outside ring ──
     // Outer ring = 110, tick goes from 106 to 116 (through and past ring)
     tft.drawLine(cx, cy - 106, cx, cy - 116, CLR_RING_BRIGHT);
-
-    // Bearing labels — placed just outside the trail sweep (r=102) at r~118
-    // so they're never painted over by the 30° trail wedge
-    tft.setTextColor(CLR_RING_BRIGHT);
-    tft.setTextSize(1);
-    tft.drawCentreString("N", cx, 1, 1);
-    tft.drawCentreString("S", cx, 238, 1);
-    tft.drawCentreString("E", 238, cy - 4, 1);
-    tft.drawCentreString("W", 2, cy - 4, 1);
 }
 
 void AircraftManager::ErasePosition(int x, int y) const

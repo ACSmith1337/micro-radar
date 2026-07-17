@@ -4,6 +4,7 @@
 #include <ESPmDNS.h>
 #elif defined(ARDUINO_ARCH_ESP8266)
 #include <ESP8266mDNS.h>
+#include "LGFX.h"
 #endif
 
 // HTML stored in flash
@@ -17,6 +18,11 @@ static const char CONFIG_HTML[] PROGMEM = R"(
     <body class="font-mono bg-gray-900 text-green-500 min-h-screen p-4 sm:p-0 text-md sm:text-sm">
         <fieldset class="border border-green-500 p-5 w-full max-w-2xl mx-auto sm:m-10">
             <legend class="px-2">Configure Micro Radar</legend>
+
+            <div style="text-align:center; margin:10px 0;">
+                <canvas id="radar-preview" width="240" height="240"
+                    style="border-radius:50%; border:2px solid #0f0; max-width:240px; image-rendering:pixelated;"></canvas>
+            </div>
 
             <form id="cfg" action="/save" method="POST" class="flex flex-col gap-4 sm:gap-2">
 
@@ -192,6 +198,33 @@ static const char CONFIG_HTML[] PROGMEM = R"(
 
             ds.addEventListener('change', toggleSections);
             toggleSections();
+
+            // Fetch LCD screenshot and render to canvas
+            (function() {
+                var canvas = document.getElementById('radar-preview');
+                if (!canvas) return;
+                var ctx = canvas.getContext('2d');
+                var imgData = ctx.createImageData(240, 240);
+
+                fetch('/screenshot')
+                    .then(function(r) { return r.arrayBuffer(); })
+                    .then(function(buf) {
+                        var bytes = new Uint8Array(buf);
+                        for (var i = 0, j = 0; i < 240 * 240; i++, j += 2) {
+                            var rgb565 = bytes[j] | (bytes[j+1] << 8);
+                            var r16 = (rgb565 >> 11) & 0x1F;
+                            var g16 = (rgb565 >> 5) & 0x3F;
+                            var b16 = rgb565 & 0x1F;
+                            // Scale 5/6-bit to 8-bit
+                            imgData.data[i*4+0] = (r16 * 527 + 23) >> 6;
+                            imgData.data[i*4+1] = (g16 * 259 + 33) >> 6;
+                            imgData.data[i*4+2] = (b16 * 527 + 23) >> 6;
+                            imgData.data[i*4+3] = 255;
+                        }
+                        ctx.putImageData(imgData, 0, 0);
+                    })
+                    .catch(function() { /* silent — no LCD connected */ });
+            })();
         </script>
     </body>
 </html>
@@ -424,6 +457,7 @@ void ConfigurationWebServer::Initialise() {
 
     server.on("/", std::bind(&ConfigurationWebServer::HandleRoot, this));
     server.on("/save", std::bind(&ConfigurationWebServer::HandleSave, this));
+    server.on("/screenshot", std::bind(&ConfigurationWebServer::HandleScreenshot, this));
 
     server.begin();
     Serial.println("[INFO] Config server listening on port 80");
@@ -431,6 +465,23 @@ void ConfigurationWebServer::Initialise() {
 
 void ConfigurationWebServer::HandleClient() {
     server.handleClient();
+}
+
+// ── Stream raw RGB565 framebuffer to browser ──
+// Browser receives binary, decodes to canvas pixels
+void ConfigurationWebServer::HandleScreenshot()
+{
+    extern LGFX tft;
+    const int w = 240, h = 240;
+
+    server.setContentLength(w * h * 2);
+    server.send(200, "application/octet-stream");
+
+    uint16_t buf[240];
+    for (int y = 0; y < h; y++) {
+        tft.readRect(0, y, w, 1, buf);
+        server.sendContent(reinterpret_cast<const char*>(buf), w * 2);
+    }
 }
 
 #endif

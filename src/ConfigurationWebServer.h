@@ -31,6 +31,7 @@ private:
 
     void HandleRoot();
     void HandleSave();
+    void HandleScreenshot();
 
 public:
     ConfigurationWebServer() : server(80), prefs() {}

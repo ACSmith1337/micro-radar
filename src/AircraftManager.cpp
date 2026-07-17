@@ -32,15 +32,15 @@ constexpr float TRAIL_STEP_DEG    = 2.0f;           // 2° per segment
 constexpr float TRAIL_TAIL_COS    = 0.8660254f;     // cos(30°)
 constexpr float TRAIL_TAIL_SIN    = 0.5f;            // sin(30°)
 
-// Phosphor green gradient: 15 steps from ghost to dark green (0x0520)
-// Muted CRT phosphor — exponential decay, no blue channel
+// Phosphor green gradient: 15 steps from black ghost to dark green (0x0520)
+// Outer steps are pure black — they erase trail residue each rotation
 constexpr uint16_t TRAIL_GRADIENT[] = {
-    0x0020, 0x0020, 0x0040, 0x0040,  // Near-black ghost (4 steps)
-    0x0060, 0x0060, 0x0080,           // Dim phosphor decay (3 steps)
-    0x00A0, 0x00C0,                   // Mid glow (2 steps)
-    0x0120, 0x0180,                   // Inner glow (2 steps)
-    0x0200, 0x0280,                   // Bright glow (2 steps)
-    0x0380,                           // Very bright (1 step)
+    0x0000, 0x0000, 0x0000, 0x0000,  // Erase ghost (4 steps — clear old trail)
+    0x0020, 0x0020, 0x0040,           // Dim phosphor decay (3 steps)
+    0x0060, 0x0080,                   // Mid glow (2 steps)
+    0x00C0, 0x0120,                   // Inner glow (2 steps)
+    0x01C0, 0x0260,                   // Bright glow (2 steps)
+    0x0360,                           // Very bright (1 step)
     0x0520                            // Dark green scan tip (1 step)
 };  // 15 entries = TRAIL_SEGMENTS
 

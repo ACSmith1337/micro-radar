@@ -3,17 +3,18 @@
 #include <ArduinoJson.h>
 #include <cmath>
 
-// ─── Cold war radar phosphor palette (P1 GREEN CRT) ───
-constexpr uint16_t CLR_BG          = 0x0000;       // Pure black
-constexpr uint16_t CLR_RING        = 0x0520;       // Dim green ring
-constexpr uint16_t CLR_RING_BRIGHT = 0x07BE;       // Bright green labels
-constexpr uint16_t CLR_SCAN        = 0x07FF;       // Bright green scan line
-constexpr uint16_t CLR_GLOW        = 0x05BF;       // Scan glow behind line
-constexpr uint16_t CLR_TRAIL       = 0x0285;       // Phosphor trail fade
-constexpr uint16_t CLR_CROSSHAIR   = 0x0210;       // Very dim crosshair
+// ─── P1 green phosphor CRT (RGB565 — zero blue channel) ───
+// RGB565 = RRRR RGGG GGGB BBBB → pure green = xxx0 xxx1 111x xxxx
+constexpr uint16_t CLR_BG          = 0x0000;       // Black
+constexpr uint16_t CLR_RING        = 0x02E0;       // Dim green (R=0 G=14 B=0)
+constexpr uint16_t CLR_RING_BRIGHT = 0x0660;       // Bright green labels
+constexpr uint16_t CLR_SCAN        = 0x07E0;       // Pure green scan line (R=0 G=63 B=0)
+constexpr uint16_t CLR_GLOW        = 0x0560;       // Scan glow
+constexpr uint16_t CLR_TRAIL       = 0x01A0;       // Phosphor fade
+constexpr uint16_t CLR_CROSSHAIR   = 0x0120;       // Barely visible
 constexpr uint16_t CLR_COMMERIAL   = 0x001F;       // Deep blue
 constexpr uint16_t CLR_MILITARY    = 0xF800;       // Red
-constexpr uint16_t CLR_UNKNOWN     = 0x07FF;       // Green (no squawk)
+constexpr uint16_t CLR_UNKNOWN     = 0x07E0;       // Green
 
 // ─── Timing ───
 constexpr uint32_t SCAN_INTERVAL   = 33;           // ~30fps
@@ -59,7 +60,7 @@ static inline void Renormalise(float &c, float &s)
     s /= mag;
 }
 
-// ─── Store current positions for interpolation before new fetch ───
+// ─── Store current positions for interpolation before new fetch ──
 static void StorePrev(const std::map<String, SimpleAircraft>& tracked,
                       std::map<String, InterpPosition>& prev)
 {
@@ -71,12 +72,13 @@ static void StorePrev(const std::map<String, SimpleAircraft>& tracked,
     }
 }
 
+// ════════════════════════════════════════════════════════════
+
 // ─── Aircraft type detection ───
 // Military squawks: 4000–4999, 7000+, emergencies
 static AircraftType GetAircraftType(const SimpleAircraft& ac)
 {
     if (ac.squawk.isEmpty()) {
-        // No squawk — default to commercial (most aircraft are civil)
         return AircraftType::COMMERCIAL;
     }
     int sq = ac.squawk.toInt();
@@ -191,7 +193,7 @@ void AircraftManager::DrawRadarFrame()
 
 // ── Draw the phosphor trail (60° behind scan line) ──
 // 60° = classic radar look, less SPI work than 90°
-// Trail redraws at 5fps — sufficient for phosphor illusion
+// Trail redraws at 10fps — sufficient for phosphor illusion
 void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
 {
     // Tail = θ - π/3 (60° behind head)

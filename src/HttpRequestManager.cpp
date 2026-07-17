@@ -1,6 +1,9 @@
 #include "HttpRequestManager.h"
 
+#include <algorithm>
+
 constexpr int HTTP_TIMEOUT_MS = 5000; // 5 second request timeout
+constexpr int MAX_HTTP_BODY   = 8192; // Cap response size
 
 static bool TimedWaitAvailable(WiFiClient& client, int timeout_ms)
 {
@@ -180,10 +183,31 @@ HttpResult HttpRequestManager::Get(const String& url, const std::vector<std::pai
     // Skip headers with timeout
     ReadHeaderTimeout(client, HTTP_TIMEOUT_MS);
 
-    // Require 2xx status
+    // Require 2xx status — read body in chunks with yield() between reads
+    // so the WiFi stack + rendering task get time slices during network I/O
     if (statusCode >= 200 && statusCode < 300) {
         result.success = true;
-        result.response = client.readString();
+        // Chunked read: 256 bytes per chunk, yield between each
+        constexpr int CHUNK = 256;
+        uint8_t buf[CHUNK];
+        while (client.connected()) {
+            int avail = client.available();
+            if (avail > 0) {
+                int toRead = std::min(avail, CHUNK);
+                if ((int)result.response.length() + toRead > MAX_HTTP_BODY) {
+                    toRead = MAX_HTTP_BODY - (int)result.response.length();
+                    if (toRead <= 0) break;
+                }
+                int n = client.read(buf, toRead - 1);
+                if (n > 0) {
+                    buf[n] = '\0';
+                    result.response += (const char*)buf;
+                }
+            } else {
+                yield(); // Let rendering run while waiting for data
+                delay(1);
+            }
+        }
     } else {
         result.success = false;
         result.errorMessage = "HTTP " + String(statusCode);

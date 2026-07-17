@@ -12,6 +12,8 @@ class Preferences {
 private:
     static const uint32_t EEPROM_SIZE = 2048;
     static const uint16_t SLOT_SIZE   = 64;
+    static const uint16_t NUM_SLOTS   = 31; // Reserve last slot for magic byte
+    static const uint16_t MAGIC_OFF   = EEPROM_SIZE - 64; // Start of reserved slot
     bool _opened = false;
 
     uint8_t crc8(const uint8_t* data, size_t len) {
@@ -30,6 +32,16 @@ public:
     bool begin(const char* partition, bool readOnly = false) {
         (void)readOnly;
         EEPROM.begin(EEPROM_SIZE);
+        // Magic byte at MAGIC_OFF (start of reserved last slot)
+        uint8_t magic = EEPROM.read(MAGIC_OFF);
+        if (magic != 0xAA) {
+            Serial.println("[EEPROM] First boot — clearing EEPROM...");
+            for (uint16_t i = 0; i < MAGIC_OFF + SLOT_SIZE; i++) {
+                EEPROM.write(i, 0xFF);
+            }
+            EEPROM.write(MAGIC_OFF, 0xAA);
+            EEPROM.commit();
+        }
         _opened = true;
         return true;
     }
@@ -44,8 +56,8 @@ public:
     String getString(const char* key, const String& def = "") {
         if (!_opened) return def;
         size_t klen = strlen(key);
-        Serial.printf("[EEPROM] getString('%s', len=%d): scanning %d slots\n", key, klen, EEPROM_SIZE / SLOT_SIZE);
-        for (uint16_t slot = 0; slot < (EEPROM_SIZE / SLOT_SIZE); slot++) {
+        Serial.printf("[EEPROM] getString('%s', len=%d): scanning %d slots\n", key, klen, NUM_SLOTS);
+        for (uint16_t slot = 0; slot < NUM_SLOTS; slot++) {
             uint16_t off = slot * SLOT_SIZE;
             uint8_t kl = EEPROM.read(off);
             if (kl == 0xFF || kl != klen || kl > 56) continue;
@@ -75,7 +87,7 @@ public:
 
         uint16_t targetOff = 0;
         bool found = false;
-        for (uint16_t slot = 0; slot < (EEPROM_SIZE / SLOT_SIZE); slot++) {
+        for (uint16_t slot = 0; slot < NUM_SLOTS; slot++) {
             uint16_t off = slot * SLOT_SIZE;
             uint8_t kl = EEPROM.read(off);
             if (kl == 0xFF || kl > 56) { targetOff = off; found = true; break; } // uninitialized

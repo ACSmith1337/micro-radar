@@ -25,10 +25,9 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                         <span>Latitude:</span>
                         <input
                             name="latitude"
-                            type="number"
-                            min="-90"
-                            step="0.000001"
-                            max="90"
+                            type="text"
+                            inputmode="decimal"
+                            pattern="-?[0-9]+\.?[0-9]*"
                             value='%LATITUDE%'
                             class="border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
                     </label>
@@ -37,10 +36,9 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                         <span>Longitude:</span>
                         <input
                             name="longitude"
-                            type="number"
-                            min="-180"
-                            step="0.000001"
-                            max="180"
+                            type="text"
+                            inputmode="decimal"
+                            pattern="-?[0-9]+\.?[0-9]*"
                             value='%LONGITUDE%'
                             class="border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
                     </label>
@@ -50,10 +48,9 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                     <span>Radius (in °):</span>
                     <input
                         name="radius"
-                        type="number"
-                        min="0.000001"
-                        step="0.000001"
-                        max="2.499999"
+                        type="text"
+                        inputmode="decimal"
+                        pattern="[0-9]+\.?[0-9]*"
                         value='%RADIUS%'
                         class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
                 </label>
@@ -83,9 +80,9 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                         <span>Port:</span>
                         <input
                             name="readsbport"
-                            type="number"
-                            min="1"
-                            max="65535"
+                            type="text"
+                            inputmode="numeric"
+                            pattern="[0-9]+"
                             value='%READSBPORT%'
                             class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
                     </label>
@@ -93,10 +90,9 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                         <span>Fetch Interval (sec):</span>
                         <input
                             name="fetchinterval"
-                            type="number"
-                            min="1"
-                            max="60"
-                            step="0.5"
+                            type="text"
+                            inputmode="decimal"
+                            pattern="[0-9]+\.?[0-9]*"
                             value='%FETCHINTERVAL%'
                             class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
                     </label>
@@ -368,11 +364,21 @@ void ConfigurationWebServer::HandleRoot() {
 void ConfigurationWebServer::HandleSave() {
     Serial.println("[POST] Handling form submission to config web server...");
 
+    // Debug: dump all received args
+    Serial.printf("[POST] Total args: %d\n", server.args());
+    for (uint8_t i = 0; i < server.args(); i++) {
+        Serial.printf("[POST]   %s = %s\n", server.argName(i).c_str(), server.arg(i).c_str());
+    }
+
     prefs.begin("config", false);
 
     auto TrySaveParam = [&](const char* paramName) {
         if (server.hasArg(paramName)) {
-            prefs.putString(paramName, server.arg(paramName));
+            String val = server.arg(paramName);
+            Serial.printf("[POST] Saving %s = '%s'\n", paramName, val.c_str());
+            prefs.putString(paramName, val);
+        } else {
+            Serial.printf("[POST] MISSING param: %s\n", paramName);
         }
     };
 
@@ -398,8 +404,16 @@ void ConfigurationWebServer::HandleSave() {
     prefs.putString("infotext", server.hasArg("infotext") ? "true" : "false");
     prefs.end();
 
+    Serial.println("[POST] EEPROM committed. Verifying write...");
+    // Quick verification read
+    prefs.begin("config", true);
+    String verifyLat = prefs.getString("latitude", "EMPTY");
+    String verifyLon = prefs.getString("longitude", "EMPTY");
+    prefs.end();
+    Serial.printf("[POST] Verify: lat='%s', lon='%s'\n", verifyLat.c_str(), verifyLon.c_str());
+
     server.send(200, "text/html", "Saved - restarting device...");
-    delay(500); // ESP8266 EEPROM needs time to write to flash
+    delay(1000); // Increase delay to ensure EEPROM flash write completes
     ESP.restart();
 }
 

@@ -44,6 +44,7 @@ public:
     String getString(const char* key, const String& def = "") {
         if (!_opened) return def;
         size_t klen = strlen(key);
+        Serial.printf("[EEPROM] getString('%s', len=%d): scanning %d slots\n", key, klen, EEPROM_SIZE / SLOT_SIZE);
         for (uint16_t slot = 0; slot < (EEPROM_SIZE / SLOT_SIZE); slot++) {
             uint16_t off = slot * SLOT_SIZE;
             uint8_t kl = EEPROM.read(off);
@@ -59,8 +60,10 @@ public:
             for (uint16_t i = 0; i < vl; i++) {
                 val += (char)EEPROM.read(off + 1 + kl + 3 + i);
             }
+            Serial.printf("[EEPROM] getString('%s') FOUND at slot %d, vl=%d → '%s'\n", key, slot, vl, val.c_str());
             return val;
         }
+        Serial.printf("[EEPROM] getString('%s') NOT FOUND → returning default '%s'\n", key, def.c_str());
         return def;
     }
 
@@ -83,7 +86,10 @@ public:
             }
             if (match) { targetOff = off; found = true; break; }
         }
-        if (!found) return;
+        if (!found) {
+            Serial.printf("[EEPROM] putString('%s') FAILED - no free slot\n", key);
+            return;
+        }
 
         EEPROM.write(targetOff, (uint8_t)klen);
         for (size_t i = 0; i < klen; i++) EEPROM.write(targetOff + 1 + i, key[i]);
@@ -92,6 +98,7 @@ public:
         EEPROM.write(dataOff + 1, (uint8_t)(vlen >> 8));
         EEPROM.write(dataOff + 2, (uint8_t)(vlen & 0xFF));
         for (size_t i = 0; i < vlen; i++) EEPROM.write(dataOff + 3 + i, value[i]);
+        Serial.printf("[EEPROM] putString('%s'='%s') → slot %d (offset=%d)\n", key, value.c_str(), targetOff / SLOT_SIZE, targetOff);
     }
 };
 #endif

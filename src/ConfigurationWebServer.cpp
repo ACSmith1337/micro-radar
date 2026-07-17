@@ -59,6 +59,7 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                         pattern="[0-9]+\.?[0-9]*"
                         value='%RADIUS%'
                         class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
+                    <small style="color:#666; margin-left:4px; white-space:nowrap;">1° ≈ 60 NM</small>
                 </label>
 
                 <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
@@ -473,14 +474,19 @@ void ConfigurationWebServer::HandleScreenshot()
 {
     extern LGFX tft;
     const int w = 240, h = 240;
+    const size_t totalBytes = (size_t)w * h * 2;
 
-    server.setContentLength(w * h * 2);
+    server.setContentLength(totalBytes);
     server.send(200, "application/octet-stream");
 
     uint16_t buf[240];
     for (int y = 0; y < h; y++) {
         tft.readRect(0, y, w, 1, buf);
         server.sendContent(reinterpret_cast<const char*>(buf), w * 2);
+        if (y % 10 == 0) {
+            delay(0);
+            yield();
+        }
     }
 }
 

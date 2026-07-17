@@ -15,8 +15,22 @@ static bool TimedWaitAvailable(WiFiClient& client, int timeout_ms)
     return client.connected();
 }
 
-static bool ReadHeaderTimeout(WiFiClient& client, int timeout_ms)
+// ── Read HTTP status line, return status code ──
+// Consumes the full "HTTP/1.1 200 OK\r\n" line
+static int ReadStatusLine(WiFiClient& client, int timeout_ms)
 {
+    if (!TimedWaitAvailable(client, timeout_ms)) return 0;
+    String line = client.readStringUntil('\n');
+    int space1 = line.indexOf(' ');
+    if (space1 < 0) return 0;
+    return line.substring(space1 + 1).toInt();
+}
+
+// ── Parse headers, return Content-Length (0 if not found) ──
+// Consumes all headers up to and including the blank line
+static int ReadHeaders(WiFiClient& client, int timeout_ms)
+{
+    int contentLength = 0;
     uint32_t start = millis();
     while (client.connected() && (millis() - start < timeout_ms)) {
         if (!client.available()) {
@@ -24,10 +38,82 @@ static bool ReadHeaderTimeout(WiFiClient& client, int timeout_ms)
             continue;
         }
         String line = client.readStringUntil('\n');
-        // Empty line = end of headers
-        if (line.length() <= 2) return true;
+        // Blank line (just \r or empty) = end of headers
+        if (line.length() <= 2) break;
+        // Check for Content-Length header
+        if (line.startsWith("Content-Length:")) {
+            String val = line.substring(15);
+            val.trim();
+            contentLength = val.toInt();
+        }
     }
-    return client.connected();
+    return contentLength;
+}
+
+// ── Read exactly N bytes from client, with yield() between chunks ──
+static String ReadBody(WiFiClient& client, int numBytes, int maxBytes)
+{
+    String result;
+    if (numBytes > maxBytes) numBytes = maxBytes;
+    if (numBytes <= 0) return result;
+    result.reserve(numBytes);
+
+    constexpr int CHUNK = 256;
+    uint8_t buf[CHUNK + 1];
+    int remaining = numBytes;
+
+    int idleTimeout = 0; // Consecutive empty-reads counter
+    while (remaining > 0) {
+        int avail = client.available();
+        if (avail > 0) {
+            idleTimeout = 0;
+            int toRead = std::min(avail, std::min(remaining, CHUNK));
+            int n = client.read(buf, toRead);
+            if (n > 0) {
+                buf[n] = '\0';
+                result += (const char*)buf;
+                remaining -= n;
+            }
+        } else {
+            yield();
+            delay(1);
+            idleTimeout++;
+            // Give up only after server closed AND no data for 50ms
+            if (!client.connected() && idleTimeout > 50) break;
+        }
+    }
+    return result;
+}
+
+// ── Drain remaining data from connection (for non-Content-Length responses) ──
+static String ReadBodyStream(WiFiClient& client, int maxBytes)
+{
+    String result;
+    constexpr int CHUNK = 256;
+    uint8_t buf[CHUNK + 1];
+    int idleTimeout = 0;
+    while ((int)result.length() < maxBytes) {
+        int avail = client.available();
+        if (avail > 0) {
+            idleTimeout = 0;
+            int toRead = std::min(avail, CHUNK);
+            if ((int)result.length() + toRead > maxBytes) {
+                toRead = maxBytes - (int)result.length();
+                if (toRead < 1) break;
+            }
+            int n = client.read(buf, toRead);
+            if (n > 0) {
+                buf[n] = '\0';
+                result += (const char*)buf;
+            }
+        } else {
+            yield();
+            delay(1);
+            idleTimeout++;
+            if (!client.connected() && idleTimeout > 50) break;
+        }
+    }
+    return result;
 }
 
 String HttpRequestManager::BuildQueryString(const std::vector<std::pair<String, String>>& params) const
@@ -157,67 +243,40 @@ HttpResult HttpRequestManager::Get(const String& url, const std::vector<std::pai
     client.println("Connection: close");
     client.println();
 
-    // Wait for response with timeout
-    if (!TimedWaitAvailable(client, HTTP_TIMEOUT_MS)) {
-        result.errorMessage = "Timeout waiting for response";
+    int statusCode = ReadStatusLine(client, HTTP_TIMEOUT_MS);
+    if (statusCode == 0) {
+        result.errorMessage = "Timeout or invalid response";
         client.stop();
-        Serial.println("[GET] Timeout: " + host);
         return result;
     }
-
-    // Read HTTP status line (e.g. "HTTP/1.1 200 OK\r")
-    String statusCodeLine = client.readStringUntil('\r');
-    // Consume trailing \n from CRLF — prevents ReadHeaderTimeout
-    // from mistaking bare \n as end-of-headers
-    if (client.available()) client.read();
-
-    int statusCode = 0;
-    int space1 = statusCodeLine.indexOf(' ');
-    int space2 = statusCodeLine.indexOf(' ', space1 + 1);
-    if (space1 > 0 && space2 > space1) {
-        statusCode = statusCodeLine.substring(space1 + 1, space2).toInt();
-    }
-
     result.statusCode = statusCode;
 
-    // Skip headers with timeout
-    ReadHeaderTimeout(client, HTTP_TIMEOUT_MS);
+  // Parse headers → get Content-Length
+    int contentLength = ReadHeaders(client, HTTP_TIMEOUT_MS);
+    Serial.printf("[GET] Status=%d CL=%d\r\n", statusCode, contentLength);
 
-    // Require 2xx status — read body in chunks with yield() between reads
-    // so the WiFi stack + rendering task get time slices during network I/O
     if (statusCode >= 200 && statusCode < 300) {
         result.success = true;
-        // Chunked read: 256 bytes per chunk, yield between each
-        // IMPORTANT: keep draining buffer even after connection closes —
-        // server may have sent the last chunk before closing the TCP connection
-        constexpr int CHUNK = 256;
-        uint8_t buf[CHUNK + 1];
-        while (client.connected() || client.available()) {
-            int avail = client.available();
-            if (avail > 0) {
-                int toRead = std::min(avail, CHUNK);
-                if ((int)result.response.length() + toRead > MAX_HTTP_BODY) {
-                    toRead = MAX_HTTP_BODY - (int)result.response.length();
-                    if (toRead < 1) break;
-                }
-                buf[toRead] = '\0';
-                int n = client.read(buf, toRead);
-                if (n > 0) {
-                    buf[n] = '\0';
-                    result.response += (const char*)buf;
-                }
-            } else {
-                yield(); // Let rendering run while waiting for data
-                delay(1);
-                // Connection closed and buffer drained — done
-                if (!client.connected()) break;
-            }
+        if (contentLength > 0) {
+            // Bulletproof: read exactly Content-Length bytes
+            result.response = ReadBody(client, contentLength, MAX_HTTP_BODY);
+        } else {
+            // Fallback: drain until connection closes
+            result.response = ReadBodyStream(client, MAX_HTTP_BODY);
         }
     } else {
         result.success = false;
         result.errorMessage = "HTTP " + String(statusCode);
-        // Drain remaining body to close connection cleanly
         client.stop();
+        return result;
+    }
+
+    // Drain any trailing data (server sends more than Content-Length)
+    while (client.connected() || client.available()) {
+        yield();
+        delay(1);
+        while (client.available()) client.read();
+        if (!client.connected()) break;
     }
 
     client.stop();
@@ -279,49 +338,28 @@ HttpResult HttpRequestManager::Post(const String& url, const String& body, const
         return result;
     }
 
-    // Read HTTP status line + consume trailing \n from CRLF
-    String statusCodeLine = client.readStringUntil('\r');
-    if (client.available()) client.read();
-
-    int statusCode = 0;
-    int space1 = statusCodeLine.indexOf(' ');
-    int space2 = statusCodeLine.indexOf(' ', space1 + 1);
-    if (space1 > 0 && space2 > space1) {
-        statusCode = statusCodeLine.substring(space1 + 1, space2).toInt();
+    int statusCode = ReadStatusLine(client, HTTP_TIMEOUT_MS);
+    if (statusCode == 0) {
+        result.errorMessage = "Timeout or invalid response";
+        client.stop();
+        return result;
     }
-
     result.statusCode = statusCode;
 
-    ReadHeaderTimeout(client, HTTP_TIMEOUT_MS);
+    int contentLength = ReadHeaders(client, HTTP_TIMEOUT_MS);
 
     if (statusCode >= 200 && statusCode < 300) {
         result.success = true;
-        constexpr int CHUNK = 256;
-        uint8_t buf[CHUNK + 1];
-        while (client.connected() || client.available()) {
-            int avail = client.available();
-            if (avail > 0) {
-                int toRead = std::min(avail, CHUNK);
-                if ((int)result.response.length() + toRead > MAX_HTTP_BODY) {
-                    toRead = MAX_HTTP_BODY - (int)result.response.length();
-                    if (toRead < 1) break;
-                }
-                buf[toRead] = '\0';
-                int n = client.read(buf, toRead);
-                if (n > 0) {
-                    buf[n] = '\0';
-                    result.response += (const char*)buf;
-                }
-            } else {
-                yield();
-                delay(1);
-                if (!client.connected()) break;
-            }
+        if (contentLength > 0) {
+            result.response = ReadBody(client, contentLength, MAX_HTTP_BODY);
+        } else {
+            result.response = ReadBodyStream(client, MAX_HTTP_BODY);
         }
     } else {
         result.success = false;
         result.errorMessage = "HTTP " + String(statusCode);
         client.stop();
+        return result;
     }
 
     client.stop();

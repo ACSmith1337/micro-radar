@@ -3,18 +3,19 @@
 #include <ArduinoJson.h>
 #include <cmath>
 
-// ─── P1 green phosphor CRT (RGB565 — zero blue channel) ───
+// ─── P1 green phosphor CRT (RGB565 — muted, darker green) ──
 // RGB565 = RRRR RGGG GGGB BBBB → pure green = xxx0 xxx1 111x xxxx
+// Muted green: lower G values, slight red for CRT warmth
 constexpr uint16_t CLR_BG          = 0x0000;       // Black
-constexpr uint16_t CLR_RING        = 0x02E0;       // Dim green (R=0 G=14 B=0)
-constexpr uint16_t CLR_RING_BRIGHT = 0x0660;       // Bright green labels
-constexpr uint16_t CLR_SCAN        = 0x07E0;       // Pure green scan line (R=0 G=63 B=0)
-constexpr uint16_t CLR_GLOW        = 0x0560;       // Scan glow
-constexpr uint16_t CLR_TRAIL       = 0x01A0;       // Phosphor fade
-constexpr uint16_t CLR_CROSSHAIR   = 0x0120;       // Barely visible
+constexpr uint16_t CLR_RING        = 0x0140;       // Dim muted green (R=0 G=10 B=0)
+constexpr uint16_t CLR_RING_BRIGHT = 0x02E0;       // Brighter green labels
+constexpr uint16_t CLR_SCAN        = 0x0520;       // Dark green scan line (R=0 G=42 B=0)
+constexpr uint16_t CLR_GLOW        = 0x0320;       // Scan glow
+constexpr uint16_t CLR_TRAIL       = 0x0120;       // Phosphor fade
+constexpr uint16_t CLR_CROSSHAIR   = 0x00A0;       // Barely visible
 constexpr uint16_t CLR_COMMERIAL   = 0x001F;       // Deep blue
 constexpr uint16_t CLR_MILITARY    = 0xF800;       // Red
-constexpr uint16_t CLR_UNKNOWN     = 0x07E0;       // Green
+constexpr uint16_t CLR_UNKNOWN     = 0x0520;       // Dark green
 
 // ─── Timing ───
 constexpr uint32_t SCAN_INTERVAL   = 33;           // ~30fps
@@ -31,17 +32,16 @@ constexpr float TRAIL_STEP_DEG    = 2.0f;           // 2° per segment
 constexpr float TRAIL_TAIL_COS    = 0.8660254f;     // cos(30°)
 constexpr float TRAIL_TAIL_SIN    = 0.5f;            // sin(30°)
 
-// Phosphor green gradient: 15 steps from ghost to pure green (0x07E0)
-// Pure green RGB565 = G << 5 (lower 5 bits = 0 → no blue channel)
-// Exponential-ish decay for realistic CRT phosphor persistence
+// Phosphor green gradient: 15 steps from ghost to dark green (0x0520)
+// Muted CRT phosphor — exponential decay, no blue channel
 constexpr uint16_t TRAIL_GRADIENT[] = {
-    0x0020, 0x0040, 0x0060, 0x00A0,  // Near-black ghost (4 steps, G=1-5)
-    0x0100, 0x0160, 0x01E0,           // Dim phosphor decay (3 steps, G=8-15)
-    0x0260, 0x02E0,                   // Mid glow (2 steps, G=19-23)
-    0x0360, 0x03E0,                   // Inner glow (2 steps, G=28-34)
-    0x0460, 0x04E0,                   // Bright glow (2 steps, G=41-48)
-    0x05E0,                           // Very bright (1 step, G=56)
-    0x07E0                            // Pure green scan tip (1 step, G=63)
+    0x0020, 0x0020, 0x0040, 0x0040,  // Near-black ghost (4 steps)
+    0x0060, 0x0060, 0x0080,           // Dim phosphor decay (3 steps)
+    0x00A0, 0x00C0,                   // Mid glow (2 steps)
+    0x0120, 0x0180,                   // Inner glow (2 steps)
+    0x0200, 0x0280,                   // Bright glow (2 steps)
+    0x0380,                           // Very bright (1 step)
+    0x0520                            // Dark green scan tip (1 step)
 };  // 15 entries = TRAIL_SEGMENTS
 
 // ── Precomputed tick directions (30° increments) ──
@@ -162,19 +162,20 @@ void AircraftManager::Update()
 }
 
 // ── Incremental scan: thin wedge per frame, smooth phosphor trail ──
-// Clockwise rotation on screen: angle increases, but Y axis is inverted
-// so screen coords go N→W→S→E = counter-clockwise. Fix: negate delta.
+// Clockwise on screen = decreasing angle (Y is inverted)
 void AircraftManager::DrawRadarFrame()
 {
     if (!displayScanLine) return;
 
-    const int cx = 120, cy = 120, r = 108;
+    const int cx = 120, cy = 120;
+    const int r = 102;             // Trail tip radius — 8px inside outer ring (110)
+    const int erase_r = r + 2;     // 104 — still 6px inside ring
 
-    // ── Advance scan angle clockwise by 1° per frame ──
+    // ── Advance scan angle CW on screen by 1° per frame ──
     constexpr float DEG1 = 0.0174533f;
-    RotateAngle(scanState.c, scanState.s, DEG1);
+    RotateAngle(scanState.c, scanState.s, -DEG1);
 
-    // Renormalise every ~180 frames (360°/2° trail segments)
+    // Renormalise every ~180 frames to prevent incremental drift
     static int normCount = 0;
     if (++normCount >= 180) {
         Renormalise(scanState.c, scanState.s);
@@ -193,20 +194,15 @@ void AircraftManager::DrawRadarFrame()
         CLR_SCAN);
 
     // ── Erase tail: 33° behind head (30° trail + 3° margin) ──
-    // The margin erases the straight-line artifact where fillTriangle
-    // extends beyond the circular arc at the outer ring.
-    // Clockwise rotation: angle increases, trail is at θ - 30°
-    // cos(33°) ≈ 0.8387, sin(33°) ≈ 0.5446
     constexpr float ERASE_COS = 0.83867f;  // cos(33°)
     constexpr float ERASE_SIN = 0.54464f;  // sin(33°)
     float eraseC = headC * ERASE_COS + headS * ERASE_SIN;
     float eraseS = headS * ERASE_COS - headC * ERASE_SIN;
     float eraseNextC = eraseC + eraseS * DEG1;
     float eraseNextS = eraseS - eraseC * DEG1;
-    // Erase a 1° wedge just past the trail boundary, slightly oversized radius
     tft.fillTriangle(cx, cy,
-        cx + (int)(eraseC * (r + 2)), cy - (int)(eraseS * (r + 2)),
-        cx + (int)(eraseNextC * (r + 2)), cy - (int)(eraseNextS * (r + 2)),
+        cx + (int)(eraseC * erase_r), cy - (int)(eraseS * erase_r),
+        cx + (int)(eraseNextC * erase_r), cy - (int)(eraseNextS * erase_r),
         CLR_BG);
 
     // ── Redraw phosphor trail (15 thin segments, smooth gradient) ──
@@ -315,13 +311,18 @@ void AircraftManager::DrawRadarGrid() const
                      cx + (int)(dx * 114), cy + (int)(dy * 114), CLR_RING);
     }
 
-    // Bearing labels
+    // ── North tick: longer mark extending outside ring ──
+    // Outer ring = 110, tick goes from 106 to 116 (through and past ring)
+    tft.drawLine(cx, cy - 106, cx, cy - 116, CLR_RING_BRIGHT);
+
+    // Bearing labels — placed just outside the trail sweep (r=102) at r~118
+    // so they're never painted over by the 30° trail wedge
     tft.setTextColor(CLR_RING_BRIGHT);
     tft.setTextSize(1);
-    tft.drawCentreString("N", cx, 6, 1);
-    tft.drawCentreString("S", cx, 234, 1);
-    tft.drawCentreString("E", 234, cy - 4, 1);
-    tft.drawCentreString("W", 6, cy - 4, 1);
+    tft.drawCentreString("N", cx, 1, 1);
+    tft.drawCentreString("S", cx, 238, 1);
+    tft.drawCentreString("E", 238, cy - 4, 1);
+    tft.drawCentreString("W", 2, cy - 4, 1);
 }
 
 void AircraftManager::ErasePosition(int x, int y) const
@@ -395,6 +396,7 @@ void AircraftManager::FetchLocal()
         Serial.printf("[FETCH] FAILED: code=%d err=%s\n", result.statusCode, result.errorMessage.c_str());
         return;
     }
+    Serial.printf("[FETCH] Got %d bytes\n", result.response.length());
     if (result.response.length() == 0) {
         Serial.println("[FETCH] Empty response");
         return;

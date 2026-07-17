@@ -21,7 +21,7 @@ static const char CONFIG_HTML[] PROGMEM = R"(
 
             <div style="text-align:center; margin:10px 0;">
                 <canvas id="radar-preview" width="240" height="240"
-                    style="border-radius:50%; border:2px solid #0f0; max-width:240px; image-rendering:pixelated;"></canvas>
+                    style="border:2px solid #0f0; max-width:240px; image-rendering:pixelated;"></canvas>
             </div>
 
             <form id="cfg" action="/save" method="POST" class="flex flex-col gap-4 sm:gap-2">

@@ -299,6 +299,15 @@ void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
     float tailC = headC * TRAIL_COS + headS * TRAIL_SIN;
     float tailS = headS * TRAIL_COS - headC * TRAIL_SIN;
 
+    // ── Clear entire 30° wedge to black BEFORE drawing gradient ──
+    // Floating-point rounding between adjacent triangle segments leaves
+    // 1-pixel gaps that accumulate green residue over frames.
+    // Clearing the whole wedge first ensures gaps show black, not old green.
+    tft.fillTriangle(cx, cy,
+        cx + (int)(headC * r),   cy - (int)(headS * r),
+        cx + (int)(tailC * r),   cy - (int)(tailS * r),
+        CLR_BG);
+
     // Rotate each segment forward toward head (clockwise = +angle)
     constexpr float STEP = 0.0349066f;  // 2° in radians
     float segC = tailC;

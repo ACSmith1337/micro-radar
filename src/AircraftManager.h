@@ -35,11 +35,12 @@ struct InterpPosition {
     bool hasPrev = false;
 };
 
-// ─── Drawing state per aircraft ───
+// ─── Drawing state per aircraft ──
 struct DrawPosition {
     int x;
     int y;
     bool visible;
+    uint8_t brightness = 5;  // PPI persistence: 5=max, decays to 0
 };
 
 // ─── Aircraft classification ───
@@ -89,10 +90,14 @@ private:
     void DrawRadarGrid() const;
     void DrawRadarFrame();
     void DrawTrail(int cx, int cy, int r, float headC, float headS);
+    void RefreshAircraft();
+    void DecayAircraft();
+
     void UpdateAircraftDisplay();
     void StorePreviousPositions();
-    void ErasePosition(int x, int y) const;
-    void DrawAircraftBlip(int x, int y, const SimpleAircraft& tracked) const;
+    void ErasePosition(int x, int y, uint8_t radius = 8) const;
+    void DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, uint8_t brightness = 5) const;
+    uint16_t FadeColor(uint16_t base, uint8_t level) const;
 
     std::pair<int, int> ProjectCoordinateToScreen(float predLat, float predLon) const;
 

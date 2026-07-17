@@ -19,10 +19,11 @@ constexpr uint16_t CLR_UNKNOWN     = 0x0520;       // Dark green
 
 // ─── Timing ───
 constexpr uint32_t SCAN_INTERVAL   = 33;           // ~30fps
-constexpr uint32_t FETCH_DEFAULT   = 3000;         // 3s data refresh
-constexpr int      MAX_AIRCRAFT    = 30;           // Heap protection
-constexpr int      MAX_RESP_BYTES  = 8192;         // Heap protection
-constexpr float SCAN_SPEED      = 0.015708f;    // 1 rev / 4s (radians per ms)
+constexpr uint32_t ROTATION_MS     = 6000;         // 1 full sweep = 6s
+constexpr uint32_t FETCH_DEFAULT   = ROTATION_MS;  // fetch at each rotation
+constexpr int      MAX_AIRCRAFT    = 30;           // heap protection
+constexpr int      MAX_RESP_BYTES  = 8192;         // heap protection
+constexpr float    SCAN_SPEED      = (6.28318f / ROTATION_MS);  // 1 rev / 6s
 
 // ─── Trail: 30° total, 15 segments, 2° each ───
 // Narrower trail = fewer pixels = less SPI time = less CPU blocking
@@ -139,25 +140,95 @@ void AircraftManager::Initialise()
 
 void AircraftManager::Update()
 {
-    // ── Scan animation at 30fps ──
+    static uint32_t lastRotation = 0;
+
+    // ── Rotation boundary: fetch data + redraw all blips at full brightness ──
+    if (millis() - lastRotation >= ROTATION_MS) {
+        lastRotation = millis();
+        RefreshAircraft();
+    }
+
+    // ── Scan animation at ~30fps ──
     static uint32_t lastScan = 0;
     if (millis() - lastScan >= SCAN_INTERVAL) {
         DrawRadarFrame();
         lastScan = millis();
     }
 
-    // ── Aircraft display update ──
-    static uint32_t lastAircraft = 0;
-    if (millis() - lastAircraft >= SCAN_INTERVAL) {
-        UpdateAircraftDisplay();
-        lastAircraft = millis();
+    // ── PPI phosphor decay: dim blips once per second ──
+    // 5 brightness levels → blips fade over ~5 seconds, gone by next rotation
+    static uint32_t lastDecay = 0;
+    if (millis() - lastDecay >= 1000) {
+        DecayAircraft();
+        lastDecay = millis();
     }
+}
 
-    // ── Data fetch on interval ──
-    if (millis() - lastFetch >= fetchInterval) {
-        StorePrev(trackedAircraft, prevPositions);
-        FetchLocal();
-        lastFetch = millis();
+// ── Called once per rotation: fetch data, project, redraw all blips at full brightness ──
+void AircraftManager::RefreshAircraft()
+{
+    // Fetch fresh data
+    StorePrev(trackedAircraft, prevPositions);
+    FetchLocal();
+    lastFetch = millis();
+
+    // Erase blips that are no longer tracked
+    std::vector<String> gone;
+    for (auto& [icao, lp] : lastPositions) {
+        if (!trackedAircraft.count(icao)) {
+            if (lp.visible) ErasePosition(lp.x, lp.y, 8);
+            gone.push_back(icao);
+        }
+    }
+    for (auto& icao : gone) lastPositions.erase(icao);
+
+    // Redraw all tracked aircraft at full brightness
+    for (auto& [icao, ac] : trackedAircraft) {
+        auto proj = ProjectCoordinateToScreen(ac.lat, ac.lon);
+        int x = proj.first, y = proj.second;
+        bool on = (x > 0 && x < 239 && y > 0 && y < 239);
+
+        if (on) {
+            // Erase old position if it moved
+            if (lastPositions.count(icao) && lastPositions[icao].visible) {
+                ErasePosition(lastPositions[icao].x, lastPositions[icao].y, 8);
+            }
+            DrawAircraftBlip(x, y, ac, 5);  // full brightness
+            lastPositions[icao] = {x, y, true, 5};
+        } else {
+            if (lastPositions.count(icao) && lastPositions[icao].visible) {
+                ErasePosition(lastPositions[icao].x, lastPositions[icao].y, 8);
+            }
+            lastPositions[icao] = {x, y, false, 0};
+        }
+    }
+}
+
+// ── Called each scan frame: decay blip brightness, erase if faded out ──
+void AircraftManager::DecayAircraft()
+{
+    std::vector<String> faded;
+    for (auto& [icao, lp] : lastPositions) {
+        if (!lp.visible || lp.brightness <= 1) continue;
+
+        lp.brightness--;
+
+        if (lp.brightness == 0) {
+            // Fully faded — erase with black
+            ErasePosition(lp.x, lp.y, 4);
+            faded.push_back(icao);
+        } else {
+            // Redraw at new lower brightness
+            if (trackedAircraft.count(icao)) {
+                auto& ac = trackedAircraft.at(icao);
+                DrawAircraftBlip(lp.x, lp.y, ac, lp.brightness);
+            }
+        }
+    }
+    for (auto& icao : faded) {
+        auto& lp = lastPositions[icao];
+        lp.brightness = 0;
+        lp.visible = false;
     }
 }
 
@@ -245,59 +316,7 @@ void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
     }
 }
 
-// ── Update aircraft positions on screen ──
-void AircraftManager::UpdateAircraftDisplay()
-{
-    float t = std::min(1.0f, (float)(millis() - lastFetch) / fetchInterval);
-
-    // Erase stale aircraft
-    std::vector<String> gone;
-    for (auto& [icao, lp] : lastPositions) {
-        if (!trackedAircraft.count(icao) && !prevPositions.count(icao)) {
-            if (lp.visible) ErasePosition(lp.x, lp.y);
-            gone.push_back(icao);
-        }
-    }
-    for (auto& icao : gone) lastPositions.erase(icao);
-
-    // Update each tracked aircraft
-    for (auto& [icao, ac] : trackedAircraft) {
-        // Interpolate position
-        float dlat = ac.lat, dlon = ac.lon;
-        if (prevPositions.count(icao)) {
-            auto& p = prevPositions[icao];
-            if (p.hasPrev) {
-                dlat = p.prevLat + (ac.lat - p.prevLat) * t;
-                dlon = p.prevLon + (ac.lon - p.prevLon) * t;
-            }
-        }
-
-        auto proj = ProjectCoordinateToScreen(dlat, dlon);
-        int x = proj.first, y = proj.second;
-        bool on = (x > 0 && x < 239 && y > 0 && y < 239);
-
-        if (on) {
-            if (lastPositions.count(icao) &&
-                (lastPositions[icao].x != x || lastPositions[icao].y != y)) {
-                ErasePosition(lastPositions[icao].x, lastPositions[icao].y);
-            }
-            DrawAircraftBlip(x, y, ac);
-            lastPositions[icao] = {x, y, true};
-        } else {
-            if (lastPositions.count(icao) && lastPositions[icao].visible) {
-                ErasePosition(lastPositions[icao].x, lastPositions[icao].y);
-            }
-            lastPositions[icao] = {x, y, false};
-        }
-    }
-}
-
-void AircraftManager::Draw(LGFX& /*buf*/)
-{
-    // No-op — rendering is incremental in UpdateAircraftDisplay()
-}
-
-// ── Static grid: rings, ticks, crosshairs, labels ──
+// ── Static grid: rings, ticks, crosshairs ──
 // Drawn ONCE in Initialise() — never redraw during animation
 void AircraftManager::DrawRadarGrid() const
 {
@@ -320,39 +339,67 @@ void AircraftManager::DrawRadarGrid() const
     }
 
     // ── North tick: longer mark extending outside ring ──
-    // Outer ring = 110, tick goes from 106 to 116 (through and past ring)
     tft.drawLine(cx, cy - 106, cx, cy - 116, CLR_RING_BRIGHT);
 }
 
-void AircraftManager::ErasePosition(int x, int y) const
+void AircraftManager::Draw(LGFX& /*buf*/)
 {
-    tft.fillCircle(x, y, 8, CLR_BG);
+    // No-op — rendering is incremental in RefreshAircraft()
 }
 
-// ── Draw aircraft blip ──
-void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac) const
+// ── Fade a base color toward black by brightness level (1-5) ──
+// Level 5 = full brightness, level 1 = dim ghost
+uint16_t AircraftManager::FadeColor(uint16_t base, uint8_t level) const
+{
+    if (level <= 0) return CLR_BG;
+    if (level >= 5) return base;
+
+    // Extract RGB565 components, scale down by level/5
+    uint16_t r5 = (base >> 11) & 0x1F;
+    uint16_t g6 = (base >> 5) & 0x3F;
+    uint16_t b5 = base & 0x1F;
+
+    uint16_t fr = (r5 * level) / 5;
+    uint16_t fg = (g6 * level) / 5;
+    uint16_t fb = (b5 * level) / 5;
+
+    return (fr << 11) | (fg << 5) | fb;
+}
+
+void AircraftManager::ErasePosition(int x, int y, uint8_t radius) const
+{
+    tft.fillCircle(x, y, radius, CLR_BG);
+}
+
+// ── Draw aircraft blip with PPI brightness scaling ──
+void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, uint8_t brightness) const
 {
     AircraftType type = GetAircraftType(ac);
-    uint16_t color;
+    uint16_t baseColor;
     switch (type) {
-        case AircraftType::MILITARY:  color = CLR_MILITARY;  break;
-        case AircraftType::COMMERCIAL: color = CLR_COMMERIAL; break;
-        default:                      color = CLR_UNKNOWN;   break;
+        case AircraftType::MILITARY:  baseColor = CLR_MILITARY;  break;
+        case AircraftType::COMMERCIAL: baseColor = CLR_COMMERIAL; break;
+        default:                      baseColor = CLR_UNKNOWN;   break;
     }
 
+    uint16_t color = FadeColor(baseColor, brightness);
+
     if (displayTriangles) {
-        // Heading arrow — 10px length for visibility
+        // Heading arrow — scale length with brightness
         float hRad = ac.heading * 0.0174533f;
-        int tx = x + (int)(cos(hRad) * 10.0f);
-        int ty = y - (int)(sin(hRad) * 10.0f);
+        float scale = 0.4f + (brightness * 0.12f);  // 0.52 to 1.0
+        int len = (int)(10.0f * scale);
+        int tx = x + (int)(cos(hRad) * len);
+        int ty = y - (int)(sin(hRad) * len);
         tft.drawLine(x, y, tx, ty, color);
-        // Arrowhead
-        int ax = tx + (int)(cos(hRad) * 3.0f);
-        int ay = ty - (int)(sin(hRad) * 3.0f);
-        tft.fillCircle(ax, ay, 2, color);
+        // Arrowhead dot only at higher brightness
+        if (brightness >= 3) {
+            tft.fillCircle(tx, ty, 2, color);
+        }
     } else {
-        // Blip — 3px filled circle
-        tft.fillCircle(x, y, 3, color);
+        // Blip — scale radius with brightness (1px dim ghost to 3px full)
+        int radius = 1 + (brightness >= 4 ? 2 : (brightness >= 2 ? 1 : 0));
+        tft.fillCircle(x, y, radius, color);
     }
 }
 

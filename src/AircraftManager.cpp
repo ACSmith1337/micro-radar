@@ -2,15 +2,25 @@
 
 #include <ArduinoJson.h>
 
-// ─── Phosphor CRT palette ───
-constexpr uint16_t CLR_BG         = 0x0000;       // Pure black
-constexpr uint16_t CLR_RING       = 0x04AF;       // Dim green (0x00,0x4A,0xF0 ≈ #009640)
-constexpr uint16_t CLR_RING_BRIGHT= 0x052F;       // Bright ring green
-constexpr uint16_t CLR_SCAN       = 0x07FF;       // Bright scan line green
-constexpr uint16_t CLR_TRAIL      = 0x0154;       // Fading trail green
-constexpr uint16_t CLR_BLIP       = 0xFFFF;       // White aircraft blip
-constexpr uint16_t CLR_TEXT       = 0x052F;       // Dim green text
-constexpr uint16_t CLR_CROSSHAIR  = 0x0286;       // Very dim green crosshair
+// ─── Cold war radar phosphor palette ───
+// Amber CRT look with subtle green accents
+constexpr uint16_t CLR_BG          = 0x0000;       // Pure black phosphor off
+constexpr uint16_t CLR_RING        = 0x3291;       // Dim amber phosphor ring
+constexpr uint16_t CLR_RING_BRIGHT = 0x7FA0;       // Bright amber for labels
+constexpr uint16_t CLR_SCAN        = 0x3FFF;       // Bright amber scan line
+constexpr uint16_t CLR_TRAIL       = 0x0A28;       // Amber phosphor trail
+constexpr uint16_t CLR_CROSSHAIR   = 0x2108;       // Very dim crosshair grid
+constexpr uint16_t CLR_COMMERIAL   = 0x001F;       // Deep blue - commercial
+constexpr uint16_t CLR_COMMERIAL_G = 0x0037;       // Blue phosphor glow
+constexpr uint16_t CLR_MILITARY    = 0xF800;       // Red - military aircraft
+constexpr uint16_t CLR_MILITARY_G  = 0x7808;       // Red phosphor glow
+constexpr uint16_t CLR_UNKNOWN     = 0x3FFF;       // Amber - unknown type
+constexpr uint16_t CLR_UNKNOWN_G   = 0x3291;       // Amber glow
+
+// ─── Smooth animation timing ───
+constexpr uint32_t SCAN_INTERVAL   = 33;           // 30fps scan animation
+constexpr uint32_t AIRCRAFT_INTERVAL = 50;         // 20fps aircraft update
+constexpr uint32_t FETCH_INTERVAL_DEFAULT = 3000;  // 3 second data refresh
 
 void AircraftManager::Initialise()
 {
@@ -30,16 +40,18 @@ void AircraftManager::Initialise()
     displayScanLine = (storedScanLine == "true");
     if (storedFetchInterval.length() > 0) {
         fetchInterval = storedFetchInterval.toFloat() * 1000.0f;
+    } else {
+        fetchInterval = FETCH_INTERVAL_DEFAULT;
     }
 
     Serial.printf("[RADAR] Config: lat=%.6f lon=%.6f rad=%.6f scan=%d tri=%d info=%d interval=%lu\n",
                    lat, lon, rad, displayScanLine, displayTriangles, displayInfoText, fetchInterval);
 
-    // Clear screen (removes WiFi text) + initial draw
+    // Clear screen (removes WiFi text) + initial radar grid
     tft.fillScreen(CLR_BG);
     DrawRadarGrid();
 
-    // Bearing labels — drawn once, outside the 112px scan erase circle
+    // Bearing labels - outside the scan erase circle
     tft.setTextColor(CLR_RING_BRIGHT);
     tft.setTextSize(1);
     tft.drawCentreString("N", 120, 4, 1);
@@ -50,40 +62,47 @@ void AircraftManager::Initialise()
 
 void AircraftManager::Update()
 {
-    // Radar animation at 30fps — black circle erase + grid + scan wedge
+    // Scan animation at 30fps
     static uint32_t lastScanDraw = 0;
-    if (millis() - lastScanDraw >= 33) {
+    if (millis() - lastScanDraw >= SCAN_INTERVAL) {
         DrawRadarFrame();
         lastScanDraw = millis();
     }
 
+    // Smooth aircraft movement at 20fps - interpolate between fetches
+    static uint32_t lastAircraftUpdate = 0;
+    if (millis() - lastAircraftUpdate >= AIRCRAFT_INTERVAL) {
+        UpdateAircraftDisplay();
+        lastAircraftUpdate = millis();
+    }
+
     // Fetch aircraft data on separate interval
     if (millis() - lastFetch >= fetchInterval) {
+        // Store previous positions for interpolation
+        StorePreviousPositions();
         FetchLocal();
         lastFetch = millis();
-        UpdateDisplay();
     }
 }
 
 // Complete radar frame: clear scan area, draw grid, draw scan wedge
-// Text labels drawn ONCE in Initialise() — outside the erase area
 void AircraftManager::DrawRadarFrame()
 {
     const int cx = 120, cy = 120;
 
-    // Black circle erase — clears scan area + grid, preserves edge text
+    // Black circle erase - clears scan area, preserves edge labels
     tft.fillCircle(cx, cy, 112, CLR_BG);
 
-    // Concentric rings
+    // Concentric range rings - amber phosphor
     tft.drawCircle(cx, cy, 110, CLR_RING);
     tft.drawCircle(cx, cy, 74,  CLR_RING);
     tft.drawCircle(cx, cy, 37,  CLR_RING);
 
-    // Crosshairs
+    // Crosshairs - very dim
     tft.drawFastHLine(12, cy, 216, CLR_CROSSHAIR);
     tft.drawFastVLine(cx, 8, 224, CLR_CROSSHAIR);
 
-    // Tick marks (every 30°) — precomputed directions
+    // Tick marks (every 30°) - precomputed directions
     float cos30 = 0.8660254f, sin30 = 0.5f;
     float cos60 = 0.5f, sin60 = 0.8660254f;
     float dirs[] = {
@@ -98,14 +117,6 @@ void AircraftManager::DrawRadarFrame()
                      cx + (int)(dx * 114), cy + (int)(dy * 114), CLR_RING);
     }
 
-    // Bearing labels — redraw each frame
-    tft.setTextColor(CLR_RING_BRIGHT);
-    tft.setTextSize(1);
-    tft.drawCentreString("N", 120, 10, 1);
-    tft.drawCentreString("S", 120, 230, 1);
-    tft.drawCentreString("E", 230, 116, 1);
-    tft.drawCentreString("W", 10, 116, 1);
-
     // Scan wedge (clockwise from North)
     if (displayScanLine) {
         float angle = -(millis() / 400.0f);
@@ -116,8 +127,8 @@ void AircraftManager::DrawRadarFrame()
         for (int i = 0; i < 60; i++) {
             uint16_t color;
             if (i == 0) color = CLR_SCAN;
-            else if (i < 5) color = 0x079F;
-            else if (i < 20) color = 0x03AF;
+            else if (i < 5) color = 0x3BEF;
+            else if (i < 20) color = 0x1A79;
             else color = CLR_TRAIL;
 
             int x1 = cx + (int)(c * r);
@@ -138,15 +149,30 @@ void AircraftManager::DrawRadarFrame()
     }
 }
 
-void AircraftManager::UpdateDisplay()
+// Store current positions for interpolation before new fetch
+void AircraftManager::StorePreviousPositions()
 {
-    // Grid + scan handled in Update() at 10fps — this only updates aircraft
+    for (auto& [icao, tracked] : trackedAircraft) {
+        if (prevPositions.count(icao)) {
+            auto& prev = prevPositions[icao];
+            prev.prevLat = prev.lat;
+            prev.prevLon = prev.lon;
+            prev.hasPrev = true;
+        }
+    }
+}
+
+// Smooth aircraft display - interpolate between previous and current positions
+void AircraftManager::UpdateAircraftDisplay()
+{
+    // Calculate interpolation factor (0 = start of interval, 1 = end)
+    float t = std::min(1.0f, (float)(millis() - lastFetch) / fetchInterval);
 
     // Erase aircraft that are no longer tracked
     std::vector<String> toRemove;
     for (auto& [icao, lastPos] : lastPositions) {
-        if (!trackedAircraft.count(icao)) {
-            ErasePosition(icao, lastPos);
+        if (!trackedAircraft.count(icao) && !prevPositions.count(icao)) {
+            ErasePosition(lastPos.x, lastPos.y);
             toRemove.push_back(icao);
         }
     }
@@ -154,9 +180,22 @@ void AircraftManager::UpdateDisplay()
         lastPositions.erase(icao);
     }
 
-    // Draw/update tracked aircraft
+    // Draw/update tracked aircraft with smooth interpolation
     for (auto& [icao, tracked] : trackedAircraft) {
-        auto projected = ProjectCoordinateToScreen(tracked.lat, tracked.lon);
+        // Interpolate position
+        float drawLat = tracked.lat;
+        float drawLon = tracked.lon;
+
+        if (prevPositions.count(icao)) {
+            auto& prev = prevPositions[icao];
+            if (prev.hasPrev) {
+                // Linear interpolation
+                drawLat = prev.prevLat + (tracked.lat - prev.prevLat) * t;
+                drawLon = prev.prevLon + (tracked.lon - prev.prevLon) * t;
+            }
+        }
+
+        auto projected = ProjectCoordinateToScreen(drawLat, drawLon);
         int x = projected.first;
         int y = projected.second;
         bool visible = (x >= 1 && x < 239 && y >= 1 && y < 239);
@@ -165,14 +204,14 @@ void AircraftManager::UpdateDisplay()
             if (lastPositions.count(icao) > 0) {
                 auto& lp = lastPositions[icao];
                 if (lp.x != x || lp.y != y) {
-                    ErasePosition(icao, lp);
+                    ErasePosition(lp.x, lp.y);
                 }
             }
             DrawAircraftBlip(x, y, tracked);
             lastPositions[icao] = {x, y, true};
         } else {
             if (lastPositions.count(icao) > 0 && lastPositions[icao].visible) {
-                ErasePosition(icao, lastPositions[icao]);
+                ErasePosition(lastPositions[icao].x, lastPositions[icao].y);
             }
             lastPositions[icao] = {x, y, false};
         }
@@ -181,11 +220,10 @@ void AircraftManager::UpdateDisplay()
 
 void AircraftManager::Draw(LGFX& /*buf*/)
 {
-    // No-op — drawing is incremental in UpdateDisplay()
+    // No-op - drawing is incremental in UpdateAircraftDisplay()
 }
 
-// Old-school CRT radar grid — drawn once in Initialise()
-// Bearing labels are drawn in Initialise() outside the scan erase area
+// Old-school CRT radar grid - drawn once in Initialise()
 void AircraftManager::DrawRadarGrid() const
 {
     const int cx = 120, cy = 120;
@@ -200,79 +238,72 @@ void AircraftManager::DrawRadarGrid() const
     tft.drawCircle(cx, cy, 37,  CLR_RING);
 }
 
-// ─── Scan wedge: incremental erase + draw at given angle ───
-// Draws/fades a sector from center to radius with trailing phosphor effect
-void AircraftManager::DrawScanLineAt(float angle)
+void AircraftManager::ErasePosition(int x, int y) const
 {
-    if (!displayScanLine) return;
+    // Erase blip area with background
+    tft.fillCircle(x, y, 6, CLR_BG);
+}
 
-    const int cx = 120, cy = 120;
-    const int radius = 110;
-    constexpr int TRAIL_LENGTH = 45;
+// Determine aircraft type by squawk code
+// Military: 1200, 4000-4999, 6000-6999, 7000-7777
+// Commercial: normal squawks 0000-3999 (excluding military)
+static AircraftType GetAircraftType(const SimpleAircraft& ac)
+{
+    if (ac.squawk.isEmpty()) return AircraftType::UNKNOWN;
 
-    for (int i = 0; i <= TRAIL_LENGTH; i++) {
-        float segAngle = angle - (i * 0.035f);
+    int squawk = ac.squawk.toInt();
 
-        uint16_t color;
-        if (i == 0) {
-            color = CLR_SCAN;
-        } else if (i < 5) {
-            color = 0x079F;
-        } else if (i < 15) {
-            color = 0x03AF;
-        } else {
-            color = CLR_TRAIL;
-        }
-
-        int x2 = cx + (int)(std::cos(segAngle) * radius);
-        int y2 = cy - (int)(std::sin(segAngle) * radius);
-
-        tft.drawLine(cx, cy, x2, y2, color);
+    // Military squawk patterns
+    if (squawk == 1200 ||  // General aviation/military
+        (squawk >= 4000 && squawk <= 4999) ||  // Military
+        (squawk >= 6000 && squawk <= 6999) ||  // Military
+        squawk >= 7000) {  // Emergency (also military)
+        return AircraftType::MILITARY;
     }
-}
 
-// Erase scan rays at previous angle by drawing background
-void AircraftManager::EraseScanLine(float angle)
-{
-    if (!displayScanLine) return;
-
-    const int cx = 120, cy = 120;
-    const int radius = 110;
-    constexpr int TRAIL_LENGTH = 45;
-
-    for (int i = 0; i <= TRAIL_LENGTH; i++) {
-        float segAngle = angle - (i * 0.035f);
-
-        int x2 = cx + (int)(std::cos(segAngle) * radius);
-        int y2 = cy - (int)(std::sin(segAngle) * radius);
-
-        tft.drawLine(cx, cy, x2, y2, CLR_BG);
+    // Emergency squawks - show as military red
+    if (squawk == 7500 || squawk == 7600 || squawk == 7700) {
+        return AircraftType::MILITARY;
     }
+
+    return AircraftType::COMMERCIAL;
 }
 
-void AircraftManager::ErasePosition(const String& /*icao*/, const DrawPosition& pos) const
-{
-    if (!pos.visible) return;
-    // Erase blip by redrawing the grid area with background
-    tft.fillCircle(pos.x, pos.y, 6, CLR_BG);
-}
-
-// ─── Aircraft blip with CRT phosphor glow ───
-// Outer dim ring + bright center dot, like a real radar contact
+// Aircraft blip with phosphor glow effect
 void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& tracked) const
 {
-    if (displayTriangles) {
-        // Directional indicator — small line showing heading
-        float headingRad = tracked.heading * 3.14159f / 180.0f;
-        int tipX = x + (int)(std::cos(headingRad) * 5.0f);
-        int tipY = y - (int)(std::sin(headingRad) * 5.0f);
-        tft.drawLine(x, y, tipX, tipY, CLR_BLIP);
+    AircraftType type = GetAircraftType(tracked);
+
+    uint16_t color, glowColor;
+    switch (type) {
+        case AircraftType::COMMERCIAL:
+            color = CLR_COMMERIAL;
+            glowColor = CLR_COMMERIAL_G;
+            break;
+        case AircraftType::MILITARY:
+            color = CLR_MILITARY;
+            glowColor = CLR_MILITARY_G;
+            break;
+        default:
+            color = CLR_UNKNOWN;
+            glowColor = CLR_UNKNOWN_G;
+            break;
     }
 
-    // Phosphor glow: outer dim ring
-    tft.drawCircle(x, y, 4, CLR_RING);
-    // Bright center
-    tft.fillCircle(x, y, 2, CLR_BLIP);
+    if (displayTriangles) {
+        // Directional indicator - heading arrow
+        float headingRad = tracked.heading * 3.14159f / 180.0f;
+        int tipX = x + (int)(std::cos(headingRad) * 6.0f);
+        int tipY = y - (int)(std::sin(headingRad) * 6.0f);
+        tft.drawLine(x, y, tipX, tipY, color);
+
+        // Small filled circle at base
+        tft.fillCircle(x, y, 1, glowColor);
+    } else {
+        // Phosphor glow effect - outer ring + bright center
+        tft.drawCircle(x, y, 4, glowColor);
+        tft.fillCircle(x, y, 2, color);
+    }
 }
 
 std::pair<int, int> AircraftManager::ProjectCoordinateToScreen(float predLat, float predLon) const

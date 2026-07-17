@@ -213,8 +213,8 @@ void AircraftManager::DrawRadarFrame()
     tft.setTextSize(1);
     tft.drawCentreString("N", cx, 0, 1);
     tft.drawCentreString("S", cx, 236, 1);
-    tft.drawCentreString("E", 236, cy - 3, 1);
-    tft.drawCentreString("W", 4, cy - 3, 1);
+    tft.drawCentreString("W", 236, cy - 3, 1);
+    tft.drawCentreString("E", 4, cy - 3, 1);
 }
 
 // ── Draw phosphor trail: 30° behind scan line, 15 thin segments ──

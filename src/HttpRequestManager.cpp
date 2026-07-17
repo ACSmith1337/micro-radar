@@ -194,11 +194,17 @@ HttpResult HttpRequestManager::Get(const String& url, const std::vector<std::pai
             int avail = client.available();
             if (avail > 0) {
                 int toRead = std::min(avail, CHUNK);
+                if (toRead < 1) {
+                    yield();
+                    delay(1);
+                    continue;
+                }
                 if ((int)result.response.length() + toRead > MAX_HTTP_BODY) {
                     toRead = MAX_HTTP_BODY - (int)result.response.length();
-                    if (toRead <= 0) break;
+                    if (toRead < 1) break;
                 }
-                int n = client.read(buf, toRead - 1);
+                buf[toRead] = '\0';
+                int n = client.read(buf, toRead);
                 if (n > 0) {
                     buf[n] = '\0';
                     result.response += (const char*)buf;

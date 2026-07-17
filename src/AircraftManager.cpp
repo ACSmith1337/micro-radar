@@ -22,7 +22,16 @@ constexpr uint32_t FETCH_DEFAULT   = 3000;         // 3s data refresh
 constexpr int      MAX_AIRCRAFT    = 30;           // Heap protection
 constexpr int      MAX_RESP_BYTES  = 8192;         // Heap protection
 constexpr float SCAN_SPEED      = 0.015708f;    // 1 rev / 4s (radians per ms)
-constexpr float TRAIL_ANGLE     = 1.5708f;       // π/2 — 90° trail behind sweep
+
+// ─── Trail: 40° total, 12 segments, 3.33° each ───
+// Narrower trail = fewer pixels = less SPI time = less CPU blocking
+constexpr float TRAIL_ANGLE_DEG   = 40.0f;
+constexpr float TRAIL_ANGLE_RAD   = 0.69813f;   // 40° in radians
+constexpr int   TRAIL_SEGMENTS    = 12;
+constexpr float TRAIL_STEP_RAD    = 0.0581775f;  // 40°/12 ≈ 3.33° per step
+// Precomputed cos(40°) and sin(40°) — avoids trig in hot path
+constexpr float TRAIL_TAIL_COS    = 0.766044f;   // cos(40°)
+constexpr float TRAIL_TAIL_SIN    = 0.642788f;   // sin(40°)
 
 // ── Precomputed tick directions (30° increments) ──
 constexpr const float TICK_DIRS[] = {
@@ -141,8 +150,9 @@ void AircraftManager::Update()
     }
 }
 
-// ── Incremental scan: only 2 triangles per frame (scan line + erase tail) ──
-// Trail is drawn every 3rd frame (6 triangles) for performance
+// ── Incremental scan: 2 thin wedges per frame (scan line + erase tail) ──
+// Trail redraws every frame — cheaper now (40°/12 segments vs old 60°/6)
+// Narrower trail = fewer pixels = less SPI time = less CPU blocking per frame
 void AircraftManager::DrawRadarFrame()
 {
     if (!displayScanLine) return;
@@ -153,9 +163,9 @@ void AircraftManager::DrawRadarFrame()
     constexpr float DEG1 = 0.0174533f;
     RotateAngle(scanState.c, scanState.s, DEG1);
 
-    // Renormalise every ~60 frames
+    // Renormalise every ~90 frames (360°/1° per frame = 1 rev)
     static int normCount = 0;
-    if (++normCount >= 60) {
+    if (++normCount >= 90) {
         Renormalise(scanState.c, scanState.s);
         normCount = 0;
     }
@@ -171,11 +181,10 @@ void AircraftManager::DrawRadarFrame()
         cx + (int)(prevC * r), cy - (int)(prevS * r),
         CLR_SCAN);
 
-    // ── Erase tail (60° behind = θ - π/3) ──
-    // cos(θ-π/3) = cos(θ)·0.5 + sin(θ)·0.866
-    // sin(θ-π/3) = sin(θ)·0.5 - cos(θ)·0.866
-    float tailC = headC * 0.5f + headS * 0.866f;
-    float tailS = headS * 0.5f - headC * 0.866f;
+    // ── Erase tail (40° behind = θ - TRAIL_ANGLE_RAD) ──
+    // Precomputed: cos(40°) = 0.766044, sin(40°) = 0.642788
+    float tailC = headC * TRAIL_TAIL_COS + headS * TRAIL_TAIL_SIN;
+    float tailS = headS * TRAIL_TAIL_COS - headC * TRAIL_TAIL_SIN;
     float eraseC = tailC + tailS * DEG1;
     float eraseS = tailS - tailC * DEG1;
     tft.fillTriangle(cx, cy,
@@ -183,36 +192,32 @@ void AircraftManager::DrawRadarFrame()
         cx + (int)(tailC * r), cy - (int)(tailS * r),
         CLR_BG);
 
-    // ── Redraw trail every 3rd frame (6 triangles, much cheaper) ──
-    static uint8_t trailCounter = 0;
-    if (++trailCounter >= 3) {
-        trailCounter = 0;
-        DrawTrail(cx, cy, r, headC, headS);
-    }
+    // ── Redraw trail every frame (12 thin segments, ~3.33° each) ──
+    // Cheaper than 6×60° segments — each wedge covers ~2.7x fewer pixels
+    DrawTrail(cx, cy, r, headC, headS);
 }
 
-// ── Draw the phosphor trail (60° behind scan line) ──
-// 60° = classic radar look, less SPI work than 90°
-// Trail redraws at 10fps — sufficient for phosphor illusion
+// ── Draw the phosphor trail (40° behind scan line, 12 thin segments) ──
+// 40° = narrow CRT-style fade, 12 segments = smooth gradient
+// Each segment ≈ 3.33° → thin wedges, fewer pixels = faster SPI transfer
 void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
 {
-    // Tail = θ - π/3 (60° behind head)
-    // cos(θ-π/3) = cos(θ)·0.5 + sin(θ)·0.866
-    // sin(θ-π/3) = sin(θ)·0.5 - cos(θ)·0.866
-    float tailC = headC * 0.5f + headS * 0.866f;
-    float tailS = headS * 0.5f - headC * 0.866f;
+    // Tail = θ - 40° (behind head)
+    float tailC = headC * TRAIL_TAIL_COS + headS * TRAIL_TAIL_SIN;
+    float tailS = headS * TRAIL_TAIL_COS - headC * TRAIL_TAIL_SIN;
 
-    // 6 segments from tail to head — dim → bright
-    float step = 1.0472f / 6.0f; // π/3 over 6 steps
+    // 12 segments from tail to head — dim → bright phosphor decay curve
     float segC = tailC;
     float segS = tailS;
 
-    for (int i = 0; i < 6; i++) {
-        RotateAngle(segC, segS, step);
+    for (int i = 0; i < TRAIL_SEGMENTS; i++) {
+        RotateAngle(segC, segS, TRAIL_STEP_RAD);
         uint16_t color;
-        if (i >= 5)   color = CLR_SCAN;    // Bright tip (1 segment at head)
-        else if (i >= 3) color = CLR_GLOW;  // Glow (2 segments)
-        else          color = CLR_TRAIL;    // Fade (3 segments)
+        // Phosphor decay: exponential-ish gradient
+        if (i >= 11)     color = CLR_SCAN;         // Brightest tip (1 seg)
+        else if (i >= 9) color = CLR_GLOW;         // Inner glow (2 segs)
+        else if (i >= 6) color = CLR_TRAIL;        // Mid fade (3 segs)
+        else             color = CLR_CROSSHAIR;    // Outer ghost (6 segs, near-black fade)
         tft.fillTriangle(cx, cy,
             cx + (int)(segC * r),   cy - (int)(segS * r),
             cx + (int)(tailC * r),  cy - (int)(tailS * r),

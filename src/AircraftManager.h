@@ -45,7 +45,9 @@ private:
     std::map<String, DrawPosition> lastPositions;
 
     void DrawRadarGrid() const;
-    void DrawScanLine();
+    void DrawRadarFrame();
+    void DrawScanLineAt(float angle);
+    void EraseScanLine(float angle);
     void ErasePosition(const String& icao, const DrawPosition& pos) const;
     std::pair<int, int> ProjectCoordinateToScreen(float predLat, float predLon) const;
     void DrawAircraftBlip(int x, int y, const SimpleAircraft& tracked) const;

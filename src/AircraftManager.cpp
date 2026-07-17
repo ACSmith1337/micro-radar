@@ -35,18 +35,25 @@ void AircraftManager::Initialise()
     Serial.printf("[RADAR] Config: lat=%.6f lon=%.6f rad=%.6f scan=%d tri=%d info=%d interval=%lu\n",
                    lat, lon, rad, displayScanLine, displayTriangles, displayInfoText, fetchInterval);
 
-    // Initial grid + scan draw
+    // Clear screen (removes WiFi text) + initial draw
+    tft.fillScreen(CLR_BG);
     DrawRadarGrid();
-    if (displayScanLine) DrawScanLine();
+
+    // Bearing labels — drawn once, outside the 112px scan erase circle
+    tft.setTextColor(CLR_RING_BRIGHT);
+    tft.setTextSize(1);
+    tft.drawCentreString("N", 120, 4, 1);
+    tft.drawCentreString("S", 120, 234, 1);
+    tft.drawCentreString("E", 236, 116, 1);
+    tft.drawCentreString("W", 4, 116, 1);
 }
 
 void AircraftManager::Update()
 {
-    // Scan line refresh at ~10fps — redraws grid (erases old scan) + new scan position
+    // Radar animation at 30fps — black circle erase + grid + scan wedge
     static uint32_t lastScanDraw = 0;
-    if (millis() - lastScanDraw >= 100) {
-        DrawRadarGrid();
-        DrawScanLine();
+    if (millis() - lastScanDraw >= 33) {
+        DrawRadarFrame();
         lastScanDraw = millis();
     }
 
@@ -55,6 +62,79 @@ void AircraftManager::Update()
         FetchLocal();
         lastFetch = millis();
         UpdateDisplay();
+    }
+}
+
+// Complete radar frame: clear scan area, draw grid, draw scan wedge
+// Text labels drawn ONCE in Initialise() — outside the erase area
+void AircraftManager::DrawRadarFrame()
+{
+    const int cx = 120, cy = 120;
+
+    // Black circle erase — clears scan area + grid, preserves edge text
+    tft.fillCircle(cx, cy, 112, CLR_BG);
+
+    // Concentric rings
+    tft.drawCircle(cx, cy, 110, CLR_RING);
+    tft.drawCircle(cx, cy, 74,  CLR_RING);
+    tft.drawCircle(cx, cy, 37,  CLR_RING);
+
+    // Crosshairs
+    tft.drawFastHLine(12, cy, 216, CLR_CROSSHAIR);
+    tft.drawFastVLine(cx, 8, 224, CLR_CROSSHAIR);
+
+    // Tick marks (every 30°) — precomputed directions
+    float cos30 = 0.8660254f, sin30 = 0.5f;
+    float cos60 = 0.5f, sin60 = 0.8660254f;
+    float dirs[] = {
+        0, -1, sin30, -cos30, cos60, -sin60,
+        1, 0, sin30, cos30, cos60, sin60,
+        0, 1, -sin30, cos30, -cos60, sin60,
+        -1, 0, -sin30, -cos30, -cos60, -sin60
+    };
+    for (int i = 0; i < 12; i++) {
+        float dx = dirs[i * 2], dy = dirs[i * 2 + 1];
+        tft.drawLine(cx + (int)(dx * 106), cy + (int)(dy * 106),
+                     cx + (int)(dx * 114), cy + (int)(dy * 114), CLR_RING);
+    }
+
+    // Bearing labels — redraw each frame
+    tft.setTextColor(CLR_RING_BRIGHT);
+    tft.setTextSize(1);
+    tft.drawCentreString("N", 120, 10, 1);
+    tft.drawCentreString("S", 120, 230, 1);
+    tft.drawCentreString("E", 230, 116, 1);
+    tft.drawCentreString("W", 10, 116, 1);
+
+    // Scan wedge (clockwise from North)
+    if (displayScanLine) {
+        float angle = -(millis() / 400.0f);
+        const int r = 110;
+        float c = std::cos(angle), s = std::sin(angle);
+        float da = 0.03f;
+
+        for (int i = 0; i < 60; i++) {
+            uint16_t color;
+            if (i == 0) color = CLR_SCAN;
+            else if (i < 5) color = 0x079F;
+            else if (i < 20) color = 0x03AF;
+            else color = CLR_TRAIL;
+
+            int x1 = cx + (int)(c * r);
+            int y1 = cy - (int)(s * r);
+
+            // Incremental rotation (no trig in loop)
+            float nc = c + s * da;
+            float ns = s - c * da;
+
+            int x2 = cx + (int)(nc * r);
+            int y2 = cy - (int)(ns * r);
+
+            tft.fillTriangle(cx, cy, x1, y1, x2, y2, color);
+
+            c = nc;
+            s = ns;
+        }
     }
 }
 
@@ -104,82 +184,69 @@ void AircraftManager::Draw(LGFX& /*buf*/)
     // No-op — drawing is incremental in UpdateDisplay()
 }
 
-// ─── Old-school CRT radar grid ───
-// Hollow range rings, tick marks, bearing labels, dim crosshairs
+// Old-school CRT radar grid — drawn once in Initialise()
+// Bearing labels are drawn in Initialise() outside the scan erase area
 void AircraftManager::DrawRadarGrid() const
 {
     const int cx = 120, cy = 120;
 
-    // Dim crosshair lines (barely visible, like CRT grid lines)
+    // Dim crosshair lines
     tft.drawFastHLine(1, cy, 238, CLR_CROSSHAIR);
     tft.drawFastVLine(cx, 1, 238, CLR_CROSSHAIR);
 
-    // Concentric range rings — outermost is brightest (like real PPI)
-    tft.drawCircle(cx, cy, 110, CLR_RING);        // Outer ring
-    tft.drawCircle(cx, cy, 74,  CLR_RING);        // Middle ring
-    tft.drawCircle(cx, cy, 37,  CLR_RING);        // Inner ring
-
-    // Tick marks on outer ring (every 30°)
-    for (int angle = 0; angle < 360; angle += 30) {
-        float rad = angle * 3.14159f / 180.0f;
-        int x1 = cx + (int)(std::cos(rad) * 106);
-        int y1 = cy - (int)(std::sin(rad) * 106);
-        int x2 = cx + (int)(std::cos(rad) * 114);
-        int y2 = cy - (int)(std::sin(rad) * 114);
-        tft.drawLine(x1, y1, x2, y2, CLR_RING);
-    }
-
-    // Bearing labels: N, E, S, W
-    tft.setTextColor(CLR_RING_BRIGHT);
-    tft.setTextSize(1);
-    tft.drawCentreString("N", cx, cy - 124, 1);
-    tft.drawCentreString("S", cx, cy + 116, 1);
-    tft.drawCentreString("E", cx + 124, cy + 4, 1);
-    tft.drawCentreString("W", cx - 124, cy + 4, 1);
+    // Concentric range rings
+    tft.drawCircle(cx, cy, 110, CLR_RING);
+    tft.drawCircle(cx, cy, 74,  CLR_RING);
+    tft.drawCircle(cx, cy, 37,  CLR_RING);
 }
 
-// ─── Scan wedge with fading trail ───
-// Draws a sector behind the sweep line with decreasing brightness,
-// mimicking the phosphor trail effect on real CRT radar
-void AircraftManager::DrawScanLine()
+// ─── Scan wedge: incremental erase + draw at given angle ───
+// Draws/fades a sector from center to radius with trailing phosphor effect
+void AircraftManager::DrawScanLineAt(float angle)
 {
     if (!displayScanLine) return;
 
     const int cx = 120, cy = 120;
     const int radius = 110;
-    float angle = millis() / 400.0f;
+    constexpr int TRAIL_LENGTH = 45;
 
-    // Number of trail segments
-    constexpr int TRAIL_LENGTH = 30;
+    for (int i = 0; i <= TRAIL_LENGTH; i++) {
+        float segAngle = angle - (i * 0.035f);
 
-    for (int i = TRAIL_LENGTH; i >= 0; i--) {
-        // Each segment is 1 degree behind the lead
-        float segAngle = angle - (i * 0.01745f); // 1° in radians
-
-        // Brightness fades from bright at leading edge to near-dark at tail
         uint16_t color;
         if (i == 0) {
-            color = CLR_SCAN; // Brightest at leading edge
-        } else if (i < 8) {
-            color = 0x07BF; // Bright-green fading
-        } else if (i < 20) {
-            color = 0x03AF; // Mid-green trail
+            color = CLR_SCAN;
+        } else if (i < 5) {
+            color = 0x079F;
+        } else if (i < 15) {
+            color = 0x03AF;
         } else {
-            color = CLR_TRAIL; // Dim trail
+            color = CLR_TRAIL;
         }
 
-        // Draw two lines at this angle to form a thin wedge
-        float innerRad = 0.3f; // 0.3° inner arc
-        float outerRad = radius;
+        int x2 = cx + (int)(std::cos(segAngle) * radius);
+        int y2 = cy - (int)(std::sin(segAngle) * radius);
 
-        // Leading edge of this segment
-        int x1 = cx + (int)(std::cos(segAngle) * innerRad);
-        int y1 = cy - (int)(std::sin(segAngle) * innerRad);
-        int x2 = cx + (int)(std::cos(segAngle) * outerRad);
-        int y2 = cy - (int)(std::sin(segAngle) * outerRad);
+        tft.drawLine(cx, cy, x2, y2, color);
+    }
+}
 
-        // Truncate at screen bounds
-        tft.drawLine(x1, y1, x2, y2, color);
+// Erase scan rays at previous angle by drawing background
+void AircraftManager::EraseScanLine(float angle)
+{
+    if (!displayScanLine) return;
+
+    const int cx = 120, cy = 120;
+    const int radius = 110;
+    constexpr int TRAIL_LENGTH = 45;
+
+    for (int i = 0; i <= TRAIL_LENGTH; i++) {
+        float segAngle = angle - (i * 0.035f);
+
+        int x2 = cx + (int)(std::cos(segAngle) * radius);
+        int y2 = cy - (int)(std::sin(segAngle) * radius);
+
+        tft.drawLine(cx, cy, x2, y2, CLR_BG);
     }
 }
 

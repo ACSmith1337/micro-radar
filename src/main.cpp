@@ -30,7 +30,6 @@ void setup()
 
     // initialise display
     tft.init();
-    tft.invertDisplay(false);
 
 #if defined(ARDUINO_ARCH_ESP32)
     pinMode(3, OUTPUT);

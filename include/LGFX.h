@@ -96,6 +96,7 @@ public:
         panel_cfg.offset_x = 0;
         panel_cfg.offset_y = 0;
         panel_cfg.offset_rotation = 2;
+        panel_cfg.invert = true;  // GC9A01 default is colour-inverted
         _panel.config(panel_cfg);
 
         _panel.setBus(&_bus);

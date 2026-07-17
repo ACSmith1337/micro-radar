@@ -31,18 +31,18 @@ constexpr float TRAIL_STEP_DEG    = 2.0f;           // 2° per segment
 constexpr float TRAIL_TAIL_COS    = 0.8660254f;     // cos(30°)
 constexpr float TRAIL_TAIL_SIN    = 0.5f;            // sin(30°)
 
-// Phosphor green gradient: 16 steps from black to pure green (0x07E0)
+// Phosphor green gradient: 15 steps from ghost to pure green (0x07E0)
+// Pure green RGB565 = G << 5 (lower 5 bits = 0 → no blue channel)
 // Exponential-ish decay for realistic CRT phosphor persistence
-// Each step: R=0, B=0, G ramps from 2→63 (RGB565 green channel = 6 bits)
 constexpr uint16_t TRAIL_GRADIENT[] = {
-    0x0002, 0x0005, 0x000A, 0x0012,  // Near-black ghost (5 steps)
-    0x001E, 0x002A, 0x003A,           // Dim phosphor decay (3 steps)
-    0x004A, 0x0058,                   // Mid glow (2 steps)
-    0x0062, 0x006E,                   // Inner glow (2 steps)
-    0x007A, 0x0086,                   // Bright glow (2 steps)
-    0x009A,                           // Bright (1 step)
-    0x07E0                            // Pure green scan tip (1 step)
-};  // 16 entries, but we only use TRAIL_SEGMENTS (15)
+    0x0020, 0x0040, 0x0060, 0x00A0,  // Near-black ghost (4 steps, G=1-5)
+    0x0100, 0x0160, 0x01E0,           // Dim phosphor decay (3 steps, G=8-15)
+    0x0260, 0x02E0,                   // Mid glow (2 steps, G=19-23)
+    0x0360, 0x03E0,                   // Inner glow (2 steps, G=28-34)
+    0x0460, 0x04E0,                   // Bright glow (2 steps, G=41-48)
+    0x05E0,                           // Very bright (1 step, G=56)
+    0x07E0                            // Pure green scan tip (1 step, G=63)
+};  // 15 entries = TRAIL_SEGMENTS
 
 // ── Precomputed tick directions (30° increments) ──
 constexpr const float TICK_DIRS[] = {
@@ -168,7 +168,7 @@ void AircraftManager::DrawRadarFrame()
 {
     if (!displayScanLine) return;
 
-    const int cx = 120, cy = 120, r = 110;
+    const int cx = 120, cy = 120, r = 108;
 
     // ── Advance scan angle clockwise by 1° per frame ──
     constexpr float DEG1 = 0.0174533f;

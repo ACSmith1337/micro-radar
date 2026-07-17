@@ -40,14 +40,23 @@ struct ScanState {
 
 static ScanState scanState;
 
-// ─── Incremental trig: rotate (c,s) forward by delta radians ───
-// cos(θ+δ) ≈ c - s*δ,  sin(θ+δ) ≈ s + c*δ
-static inline void RotateIncremental(float &c, float &s, float delta)
+// ─── Incremental trig: rotate (c,s) to increase angle by delta radians ──
+// Increasing angle = clockwise on screen (N→E→S→W)
+// cos(θ+δ) = c - s·δ,  sin(θ+δ) = s + c·δ
+static inline void RotateAngle(float &c, float &s, float delta)
 {
     float nc = c - s * delta;
     float ns = s + c * delta;
     c = nc;
     s = ns;
+}
+
+// ─── Renormalise to prevent incremental drift ───
+static inline void Renormalise(float &c, float &s)
+{
+    float mag = sqrt(c * c + s * s);
+    c /= mag;
+    s /= mag;
 }
 
 // ─── Store current positions for interpolation before new fetch ───
@@ -130,70 +139,77 @@ void AircraftManager::Update()
     }
 }
 
-// ── Incremental scan frame: only the sweep changes each frame ──
-// Grid is drawn once in Initialise() — never redrawn here
+// ── Incremental scan: only 2 triangles per frame (scan line + erase tail) ──
+// Trail is drawn every 3rd frame (6 triangles) for performance
 void AircraftManager::DrawRadarFrame()
 {
     if (!displayScanLine) return;
 
     const int cx = 120, cy = 120, r = 110;
 
-    // Advance angle incrementally
-    float delta = SCAN_SPEED * SCAN_INTERVAL; // radians this frame
-    RotateIncremental(scanState.c, scanState.s, delta);
+    // ── Advance scan angle clockwise by 1° per frame ──
+    constexpr float DEG1 = 0.0174533f;
+    RotateAngle(scanState.c, scanState.s, DEG1);
 
-    // Periodically renormalise to prevent drift
+    // Renormalise every ~60 frames
     static int normCount = 0;
-    if (++normCount >= 900) { // Every ~30s renormalise
-        float mag = sqrt(scanState.c * scanState.c + scanState.s * scanState.s);
-        scanState.c /= mag;
-        scanState.s /= mag;
+    if (++normCount >= 60) {
+        Renormalise(scanState.c, scanState.s);
         normCount = 0;
     }
 
-    // ── 1. Erase oldest trail (black wedge far behind sweep) ──
-    // Trail angle = current - TRAIL_ANGLE - delta
-    float tc = scanState.c * cos(TRAIL_ANGLE) + scanState.s * sin(TRAIL_ANGLE);
-    float ts = scanState.s * cos(TRAIL_ANGLE) - scanState.c * sin(TRAIL_ANGLE);
-    // Rotate trail backward by one delta (the slice we're about to clear)
-    float tc2 = tc + ts * delta;  // reverse rotation
-    float ts2 = ts - tc * delta;
+    float headC = scanState.c;
+    float headS = scanState.s;
 
+    // ── Bright scan line (1° wedge at leading edge) ──
+    float prevC = headC + headS * DEG1;
+    float prevS = headS - headC * DEG1;
     tft.fillTriangle(cx, cy,
-        cx + (int)(tc * r), cy - (int)(ts * r),
-        cx + (int)(tc2 * r), cy - (int)(ts2 * r),
-        CLR_BG);
-
-    // ── 2. Draw new scan line + glow (bright → dim going behind) ──
-    float c = scanState.c;
-    float s = scanState.s;
-
-    // Bright scan line (narrow slice at leading edge)
-    float c2 = c + s * delta;   // one step behind
-    float s2 = s - c * delta;
-
-    tft.fillTriangle(cx, cy,
-        cx + (int)(c * r),   cy - (int)(s * r),
-        cx + (int)(c2 * r),  cy - (int)(s2 * r),
+        cx + (int)(headC * r), cy - (int)(headS * r),
+        cx + (int)(prevC * r), cy - (int)(prevS * r),
         CLR_SCAN);
 
-    // Glow band (medium brightness, 3x width)
-    float c3 = c2 + s2 * delta * 2;
-    float s3 = s2 - c2 * delta * 2;
-
+    // ── Erase tail (90° behind) ──
+    float tailC = headS;   // cos(θ+π/2)
+    float tailS = -headC;  // sin(θ+π/2)
+    float eraseC = tailC + tailS * DEG1;
+    float eraseS = tailS - tailC * DEG1;
     tft.fillTriangle(cx, cy,
-        cx + (int)(c2 * r), cy - (int)(s2 * r),
-        cx + (int)(c3 * r), cy - (int)(s3 * r),
-        CLR_GLOW);
+        cx + (int)(eraseC * r), cy - (int)(eraseS * r),
+        cx + (int)(tailC * r), cy - (int)(tailS * r),
+        CLR_BG);
 
-    // Trail band (dim, wider)
-    float c4 = c3 + s3 * delta * 4;
-    float s4 = s3 - c3 * delta * 4;
+    // ── Redraw trail every 3rd frame (6 triangles, much cheaper) ──
+    static uint8_t trailCounter = 0;
+    if (++trailCounter >= 3) {
+        trailCounter = 0;
+        DrawTrail(cx, cy, r, headC, headS);
+    }
+}
 
-    tft.fillTriangle(cx, cy,
-        cx + (int)(c3 * r), cy - (int)(s3 * r),
-        cx + (int)(c4 * r), cy - (int)(s4 * r),
-        CLR_TRAIL);
+// ── Draw the phosphor trail (90° behind scan line) ──
+void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
+{
+    float tailC = headS;   // 90° behind head
+    float tailS = -headC;
+
+    float step = 1.5708f / 6.0f; // 90° over 6 segments
+    float segC = tailC;
+    float segS = tailS;
+
+    for (int i = 0; i < 6; i++) {
+        RotateAngle(segC, segS, step);
+        uint16_t color;
+        if (i < 1)  color = CLR_SCAN;
+        else if (i < 2) color = CLR_GLOW;
+        else          color = CLR_TRAIL;
+        tft.fillTriangle(cx, cy,
+            cx + (int)(segC * r),   cy - (int)(segS * r),
+            cx + (int)(tailC * r),  cy - (int)(tailS * r),
+            color);
+        tailC = segC;
+        tailS = segS;
+    }
 }
 
 // ── Update aircraft positions on screen ──

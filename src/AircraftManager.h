@@ -88,6 +88,7 @@ private:
     // Drawing
     void DrawRadarGrid() const;
     void DrawRadarFrame();
+    void DrawTrail(int cx, int cy, int r, float headC, float headS);
     void UpdateAircraftDisplay();
     void StorePreviousPositions();
     void ErasePosition(int x, int y) const;

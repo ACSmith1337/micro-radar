@@ -1,11 +1,27 @@
 #pragma once
 
 #include <map>
+#include <vector>
 
-#include "models/TrackedAircraft.h"
 #include "ConfigurationWebServer.h"
-#include "OpenSkyAuthTokenHandler.h"
+#include "HttpRequestManager.h"
 #include "LGFX.h"
+
+// Lightweight aircraft record for local fetch (no blending needed at 3s refresh)
+struct SimpleAircraft {
+    double lat = 0;
+    double lon = 0;
+    double altitude = 0;
+    double heading = 0;
+    String icao;
+    String squawk;
+};
+
+struct DrawPosition {
+    int x = 0;
+    int y = 0;
+    bool visible = false;
+};
 
 class AircraftManager
 {
@@ -13,37 +29,32 @@ private:
     double lat = 0.0;
     double lon = 0.0;
     double rad = 0.2;
-    std::map<String, TrackedAircraft> trackedAircraft;
+    std::map<String, SimpleAircraft> trackedAircraft;
 
     bool displayInfoText = true;
     bool displayTriangles = true;
+    bool displayScanLine = true;
 
-    // Data source selection: "opensky" (default) or "local" (readsb/dump1090)
-    String dataSource = "opensky";
-
-    // Poll interval (ms) — OpenSky is ~60s, local readsb can be ~3s
-    unsigned long fetchInterval = 60000;
+    unsigned long fetchInterval = 3000;
     unsigned long lastFetch = 999999;
 
     ConfigurationWebServer& configServer;
-    OpenSkyAuthTokenHandler& authHandler;
     HttpRequestManager& http;
     LGFX& tft;
 
-    void DrawRadarCircles(LGFX& buf) const;
+    std::map<String, DrawPosition> lastPositions;
+
+    void DrawRadarGrid() const;
+    void DrawScanLine();
+    void ErasePosition(const String& icao, const DrawPosition& pos) const;
     std::pair<int, int> ProjectCoordinateToScreen(float predLat, float predLon) const;
-    void DrawAircraftInfo(LGFX& buf, int x, int y, const TrackedAircraft& tracked) const;
-    void DrawAircraftTriangle(LGFX& buf, int x, int y, const TrackedAircraft& tracked) const;
-
-    // OpenSky fetch (existing)
-    void FetchOpenSky();
-
-    // Local readsb/dump1090 fetch
+    void DrawAircraftBlip(int x, int y, const SimpleAircraft& tracked) const;
+    void UpdateDisplay();
     void FetchLocal();
 
 public:
-    AircraftManager(ConfigurationWebServer& config, OpenSkyAuthTokenHandler& auth, HttpRequestManager& httpManager, LGFX& tftGfx)
-        : configServer(config), authHandler(auth), http(httpManager), tft(tftGfx)
+    AircraftManager(ConfigurationWebServer& config, HttpRequestManager& httpManager, LGFX& tftGfx)
+        : configServer(config), http(httpManager), tft(tftGfx)
     {
     }
     ~AircraftManager() = default;

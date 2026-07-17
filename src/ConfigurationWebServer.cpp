@@ -7,7 +7,6 @@
 #endif
 
 // HTML stored in flash
-// %PLACEHOLDER% tokens are substituted at serve time by the template processor
 static const char CONFIG_HTML[] PROGMEM = R"(
 <html>
     <head>
@@ -101,6 +100,15 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                             value='%FETCHINTERVAL%'
                             class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
                     </label>
+                    <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                        <span>JSON Path:</span>
+                        <input
+                            name="readsbpath"
+                            type="text"
+                            placeholder="/data/aircraft.json"
+                            value='%READSBPATH%'
+                            class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
+                    </label>
                 </fieldset>
 
                 <fieldset id="opensky-fields" class="border border-green-700 p-3 flex flex-col gap-2">
@@ -162,12 +170,16 @@ static const char CONFIG_HTML[] PROGMEM = R"(
         <script>
             document.getElementById('cfg').addEventListener('submit', function(e) {
                 e.preventDefault();
-                fetch(this.action, { method: 'POST', body: new FormData(this) })
+                var params = new URLSearchParams(new FormData(this));
+                fetch(this.action, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: params.toString()
+                })
                     .then(r => r.text())
                     .then(html => document.getElementById('result').innerHTML = html);
             });
 
-            // Show/hide settings sections based on selected data source
             const ds = document.querySelector('select[name="datasource"]');
             const localFields = document.getElementById('local-fields');
             const openskyFields = document.getElementById('opensky-fields');
@@ -183,23 +195,26 @@ static const char CONFIG_HTML[] PROGMEM = R"(
             }
 
             ds.addEventListener('change', toggleSections);
-            toggleSections(); // initial state
+            toggleSections();
         </script>
     </body>
 </html>
 )";
 
+#if defined(ARDUINO_ARCH_ESP32)
+
+// ──────────────────────────────────────────────
+// ESP32: AsyncWebServer (template processor)
+// ──────────────────────────────────────────────
+
 void ConfigurationWebServer::Initialise() {
-    // start mDNS and check result
     if (!MDNS.begin("microradar")) {
         Serial.println("[WARN] Failed to start mDNS. Continuing without mDNS...");
     }
 
-    // Handle visit to config web server
-    server.on("/", HTTP_GET, [&](AsyncWebServerRequest* request) {
+    server->on("/", HTTP_GET, [&](AsyncWebServerRequest* request) {
         Serial.println("[GET] Handling request to config web server...");
 
-        // read all values up front so the processor lambda can capture by value
         prefs.begin("config", true);
         const String latitude = prefs.getString("latitude", "");
         const String longitude = prefs.getString("longitude", "");
@@ -215,14 +230,11 @@ void ConfigurationWebServer::Initialise() {
         const String fetchInterval = prefs.getString("fetchinterval", "3");
         prefs.end();
 
-        // mask secret before sending to client
         std::fill(openskySecret.begin(), openskySecret.end(), '*');
 
-        // Determine which data source option is selected
         const String dsOpenSky = dataSource == "opensky" ? "selected" : "";
         const String dsLocal = dataSource == "local" ? "selected" : "";
 
-        // template processor called once per %PLACEHOLDER% token found in CONFIG_HTML.
         AsyncWebServerResponse* response = request->beginResponse(
             200, "text/html",
             (const uint8_t*)CONFIG_HTML, sizeof(CONFIG_HTML) - 1,
@@ -245,14 +257,11 @@ void ConfigurationWebServer::Initialise() {
             }
         );
         request->send(response);
-        }
-    );
+    });
 
-    // Handle save submission to web server
-    server.on("/save", HTTP_POST, [&](AsyncWebServerRequest* request) {
+    server->on("/save", HTTP_POST, [&](AsyncWebServerRequest* request) {
         Serial.println("[POST] Handling form submission to config web server...");
 
-        // safe parameter retrieval helper lambda
         auto TrySaveParam = [request, this](const char* paramName) {
             const auto* param = request->getParam(paramName, true);
             if (param == nullptr)
@@ -260,7 +269,7 @@ void ConfigurationWebServer::Initialise() {
 
             prefs.putString(paramName, param->value());
             return true;
-            };
+        };
 
         prefs.begin("config", false);
 
@@ -271,12 +280,13 @@ void ConfigurationWebServer::Initialise() {
         TrySaveParam("opensky-id");
         TrySaveParam("readsbhost");
         TrySaveParam("readsbport");
+        TrySaveParam("readsbpath");
         TrySaveParam("fetchinterval");
 
         const auto* param = request->getParam("opensky-secret", true);
         if (param != nullptr) {
             const String& secret = param->value();
-            if (secret.indexOf('*') == -1) { // Special handling for secret: don't overwrite with masked value
+            if (secret.indexOf('*') == -1) {
                 prefs.putString("opensky-secret", secret);
             }
         }
@@ -288,14 +298,130 @@ void ConfigurationWebServer::Initialise() {
 
         request->send(200, "text/html", "Saved - restarting device...");
         ESP.restart();
-        }
-    );
+    });
 
-    server.begin();
+    server->begin();
 }
 
-const String ConfigurationWebServer::GetStoredString(const char* key)
+#elif defined(ARDUINO_ARCH_ESP8266)
+
+// ──────────────────────────────────────────────
+// ESP8266: ESP8266WebServer (synchronous, stream-based)
+// ──────────────────────────────────────────────
+
+static String substitutePlaceholders(String templateStr, const String& key, const String& value)
 {
+    templateStr.replace(key, value);
+    return templateStr;
+}
+
+void ConfigurationWebServer::HandleRoot() {
+    Serial.println("[GET] Handling request to config web server...");
+
+    prefs.begin("config", true);
+    String latitude = prefs.getString("latitude", "");
+    String longitude = prefs.getString("longitude", "");
+    String radius = prefs.getString("radius", "1.0");
+    String openskyClientId = prefs.getString("opensky-id", "");
+    String openskySecret = prefs.getString("opensky-secret", "");
+    String scanlineEnabled = prefs.getString("scanline", "true");
+    String infoTextEnabled = prefs.getString("infotext", "true");
+    String triangleEnabled = prefs.getString("triangle", "true");
+    String dataSource = prefs.getString("datasource", "opensky");
+    String readsbHost = prefs.getString("readsbhost", "");
+    String readsbPort = prefs.getString("readsbport", "8080");
+    String readsbPath = prefs.getString("readsbpath", "/data/aircraft.json");
+    String fetchInterval = prefs.getString("fetchinterval", "3");
+    prefs.end();
+
+    std::fill(openskySecret.begin(), openskySecret.end(), '*');
+
+    String html;
+
+#if defined(__PROGMEM_TYPES_DEFINED)
+    html.reserve(sizeof(CONFIG_HTML));
+    for (size_t i = 0; i < sizeof(CONFIG_HTML) - 1; i++) {
+        html += (char)pgm_read_byte(CONFIG_HTML + i);
+    }
+#else
+    html = String(CONFIG_HTML);
+#endif
+
+    html = substitutePlaceholders(html, "%LATITUDE%", latitude);
+    html = substitutePlaceholders(html, "%LONGITUDE%", longitude);
+    html = substitutePlaceholders(html, "%RADIUS%", radius);
+    html = substitutePlaceholders(html, "%OPENSKY_ID%", openskyClientId);
+    html = substitutePlaceholders(html, "%OPENSKY_SECRET%", openskySecret);
+    html = substitutePlaceholders(html, "%SCANLINE%", scanlineEnabled == "true" ? "checked" : "");
+    html = substitutePlaceholders(html, "%INFOTEXT%", infoTextEnabled == "true" ? "checked" : "");
+    html = substitutePlaceholders(html, "%TRIANGLE%", triangleEnabled == "true" ? "checked" : "");
+    html = substitutePlaceholders(html, "%DS_OPENSKY%", dataSource == "opensky" ? "selected" : "");
+    html = substitutePlaceholders(html, "%DS_LOCAL%", dataSource == "local" ? "selected" : "");
+    html = substitutePlaceholders(html, "%READSBHOST%", readsbHost);
+    html = substitutePlaceholders(html, "%READSBPORT%", readsbPort);
+    html = substitutePlaceholders(html, "%READSBPATH%", readsbPath);
+    html = substitutePlaceholders(html, "%FETCHINTERVAL%", fetchInterval);
+
+    server.send(200, "text/html", html);
+}
+
+void ConfigurationWebServer::HandleSave() {
+    Serial.println("[POST] Handling form submission to config web server...");
+
+    prefs.begin("config", false);
+
+    auto TrySaveParam = [&](const char* paramName) {
+        if (server.hasArg(paramName)) {
+            prefs.putString(paramName, server.arg(paramName));
+        }
+    };
+
+    TrySaveParam("latitude");
+    TrySaveParam("longitude");
+    TrySaveParam("radius");
+    TrySaveParam("datasource");
+    TrySaveParam("opensky-id");
+    TrySaveParam("readsbhost");
+    TrySaveParam("readsbport");
+    TrySaveParam("readsbpath");
+    TrySaveParam("fetchinterval");
+
+    if (server.hasArg("opensky-secret")) {
+        const String& secret = server.arg("opensky-secret");
+        if (secret.indexOf('*') == -1) {
+            prefs.putString("opensky-secret", secret);
+        }
+    }
+
+    prefs.putString("scanline", server.hasArg("scanline") ? "true" : "false");
+    prefs.putString("triangle", server.hasArg("triangle") ? "true" : "false");
+    prefs.putString("infotext", server.hasArg("infotext") ? "true" : "false");
+    prefs.end();
+
+    server.send(200, "text/html", "Saved - restarting device...");
+    delay(500); // ESP8266 EEPROM needs time to write to flash
+    ESP.restart();
+}
+
+void ConfigurationWebServer::Initialise() {
+    if (!MDNS.begin("microradar")) {
+        Serial.println("[WARN] Failed to start mDNS. Continuing without mDNS...");
+    }
+
+    server.on("/", std::bind(&ConfigurationWebServer::HandleRoot, this));
+    server.on("/save", std::bind(&ConfigurationWebServer::HandleSave, this));
+
+    server.begin();
+    Serial.println("[INFO] Config server listening on port 80");
+}
+
+void ConfigurationWebServer::HandleClient() {
+    server.handleClient();
+}
+
+#endif
+
+const String ConfigurationWebServer::GetStoredString(const char* key) {
     prefs.begin("config", true);
     const String value = prefs.getString(key, "");
     prefs.end();

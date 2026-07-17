@@ -1,6 +1,13 @@
 #pragma once
 
+#if defined(ARDUINO_ARCH_ESP32)
 #include <HTTPClient.h>
+#elif defined(ARDUINO_ARCH_ESP8266)
+// On ESP8266, use raw WiFiClient — ESP8266HTTPClient's HTTP_GET/HTTP_POST enums
+// conflict with ESPAsyncWebServer, and the old begin(url) API is deprecated.
+#include <WiFiClient.h>
+#endif
+
 #include <vector>
 
 struct HttpResult {
@@ -12,8 +19,10 @@ struct HttpResult {
 
 class HttpRequestManager
 {
+#if defined(ARDUINO_ARCH_ESP32)
 private:
     HTTPClient http;
+#endif
 
     String BuildQueryString(const std::vector<std::pair<String, String>>& params) const;
 

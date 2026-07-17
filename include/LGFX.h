@@ -15,105 +15,91 @@ public:
     LGFX(void)
     {
         {
-            auto cfg = _bus.config();
-            cfg.spi_host = SPI2_HOST;
-            cfg.freq_write = 40000000;
-            cfg.pin_miso = -1;
-            cfg.pin_mosi = 7;
-            cfg.pin_sclk = 6;
-            cfg.pin_dc   = 2;
-            _bus.config(cfg);
-            _panel.setBus(&_bus);
+            auto& bus = _bus.config();
+            bus.platform = 2;
+            bus.spi_host = VSPI_HOST;
+            bus.spi_mode = 0;
+            bus.freq_write = 40000000;
+            bus.freq_read = 6000000;
+            bus.spi_3wire = true;
+            bus.spi_half_duplex = true;
+            bus.shared = true;
+
+            bus.pin_sclk = 18;
+            bus.pin_mosi = 19;
+            bus.pin_miso = 8;
+            bus.pin_cs = 7;
+            bus.pin_dc = 6;
         }
+        _bus.attachSPI(lgfx::getSPI(2));
+
         {
-            auto cfg = _panel.config();
-            cfg.pin_cs  = 10;
-            cfg.pin_rst = -1;
-            cfg.pin_busy = -1;
-            cfg.memory_width  = 240;
+            auto& cfg = _panel.config();
+            cfg.pin_reset = 10;
+            cfg.pin_backlight = 21;
+            cfg.backlight_on_active = false;
+            cfg.memory_width = 240;
             cfg.memory_height = 240;
-            cfg.panel_width   = 240;
-            cfg.panel_height  = 240;
-            // Round panel clipping
-            cfg.offset_rotation = 0;
-            cfg.readable  = false;
-            cfg.invert    = true;
-            cfg.rgb_order = false;
-            _panel.config(cfg);
+            cfg.panel_width = 240;
+            cfg.panel_height = 240;
+            cfg.offset_x = 0;
+            cfg.offset_y = 0;
+            cfg.offset_rotation = 2;
+            cfg.read_color_565 = true;
+            cfg.bus_shared = true;
         }
-        {
-            auto cfg = _light.config();
-            cfg.pin_bl = 3;
-            cfg.invert = false;
-            _light.config(cfg);
-            _panel.setLight(&_light);
-        }
+
+        _light.config();
+        _light.pin_init();
+        _light.pin_setter(0);
+        _panel.attachLight(&_light);
+
         setPanel(&_panel);
     }
 };
 
 #elif defined(ARDUINO_ARCH_ESP8266)
 // ──────────────────────────────────────────────
-// ESP8266 D1 Mini + GC9A01 round 240×240
-//
-// Pin mapping (change if your wiring differs):
-//   MOSI  → D7  (GPIO13, hardware SPI)
-//   SCLK  → D5  (GPIO14, hardware SPI)
-//   CS    → D8  (GPIO15)
-//   DC    → D2  (GPIO4)
-//   RST   → D3  (GPIO0)  ⚠ GPIO0 is boot-strapping pin; use D4/D6 if flashing issues
-//   BL    → D1  (GPIO5)
+// ESP8266 NodeMCU V3 — GC9A01 240×240 round
+// Bus_SPI config: freq_write, freq_read, spi_3wire, pin_sclk, pin_miso, pin_mosi, pin_dc, spi_mode
+// Panel config: pin_cs, pin_rst, memory_*, panel_*, offset_*, read_color_565
+// No Light_PWM on ESP8266 — backlight is tied to VCC on round panels.
 // ──────────────────────────────────────────────
 class LGFX : public lgfx::LGFX_Device
 {
     lgfx::Panel_GC9A01 _panel;
     lgfx::Bus_SPI _bus;
-    lgfx::Light_PWM _light;
 
 public:
     LGFX(void)
     {
-        {
-            auto cfg = _bus.config();
-            cfg.spi_mode   = SPI_MODE0;
-            cfg.freq_write = 40000000;
-            cfg.freq_read  = 1000000;
-            cfg.pin_mosi   = 13;  // D7
-            cfg.pin_miso   = -1;
-            cfg.pin_sclk   = 14;  // D5
-            cfg.pin_dc     = 4;   // D2
-            cfg.spi_cs_mode = lgfx::SPI_CS_MODE::SPI_CS_MODE_0;
-            _bus.config(cfg);
-            _panel.setBus(&_bus);
-        }
-        {
-            auto cfg = _panel.config();
-            cfg.pin_cs     = 15;  // D8
-            cfg.pin_rst    = 0;   // D3  (change to GPIO2/D4 if boot issues)
-            cfg.pin_busy   = -1;
+        // Bus configuration
+        lgfx::Bus_SPI::config_t bus_cfg;
+        bus_cfg.freq_write = 40000000; // 40MHz - stable for GC9A01 on ESP8266
+        bus_cfg.freq_read  = 6000000;
+        bus_cfg.spi_3wire  = true;
+        bus_cfg.pin_sclk   = 14;   // SCL → D5
+        bus_cfg.pin_mosi   = 13;   // SDA → D7
+        bus_cfg.pin_miso   = 12;   // D6 (unused but valid)
+        bus_cfg.pin_dc     = 4;    // DC → D2
+        bus_cfg.spi_mode   = 0;
+        _bus.config(bus_cfg);
 
-            // 240×240 round display
-            cfg.memory_width  = 240;
-            cfg.memory_height = 240;
-            cfg.panel_width   = 240;
-            cfg.panel_height  = 240;
+        // Panel configuration
+        lgfx::Panel_Device::config_t panel_cfg;
+        panel_cfg.pin_cs = 15;     // CS → D8
+        panel_cfg.pin_rst = 0;     // RST → D3
+        panel_cfg.memory_width  = 240;
+        panel_cfg.memory_height = 240;
+        panel_cfg.panel_width   = 240;
+        panel_cfg.panel_height  = 240;
+        panel_cfg.offset_x = 0;
+        panel_cfg.offset_y = 0;
+        panel_cfg.offset_rotation = 2;
+        _panel.config(panel_cfg);
 
-            cfg.offset_rotation = 0;
-            cfg.readable  = false;
-            cfg.invert    = true;
-            cfg.rgb_order = false;
-            _panel.config(cfg);
-        }
-        {
-            auto cfg = _light.config();
-            cfg.pin_bl = 5;   // D1
-            cfg.invert = false;
-            _light.config(cfg);
-            _panel.setLight(&_light);
-        }
+        _panel.setBus(&_bus);
         setPanel(&_panel);
     }
 };
-#else
-#error "Unsupported architecture — use ESP32 or ESP8266"
 #endif

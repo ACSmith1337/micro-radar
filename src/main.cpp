@@ -6,9 +6,7 @@
 #include "WiFiManagerHelpers.h"
 #include "ConfigurationWebServer.h"
 #include "HttpRequestManager.h"
-#include "OpenSkyAuthTokenHandler.h"
 #include "AircraftManager.h"
-#include "DrawHelpers.h"
 #include "models/Aircraft.h"
 #include "models/TrackedAircraft.h"
 
@@ -17,15 +15,13 @@ const char* preconfiguredWifiSsid = "";
 const char* preconfiguredWifiPassword = "";
 
 constexpr int SCREEN_SIZE = 240;
-constexpr int SCREEN_SIZE_DIV_2 = (SCREEN_SIZE / 2);
 
 LGFX tft;
 WiFiManager wm;
 ConfigurationWebServer configServer;
 HttpRequestManager http;
-OpenSkyAuthTokenHandler authHandler(http);
 
-AircraftManager aircraftManager(configServer, authHandler, http, tft);
+AircraftManager aircraftManager(configServer, http, tft);
 
 // Round panel corner masking — draws black circles to cover corners
 // that extend beyond the physical round bezel.
@@ -74,30 +70,18 @@ void setup()
     // begin background server for configuration
     configServer.Initialise();
 
-    // initialise aircraft manager
+    // initialise aircraft manager (draws radar grid once)
     aircraftManager.Initialise();
+
+    // Mask round panel corners once
+    DrawRoundMask(tft);
 }
 
 void loop()
 {
+    // Update aircraft data + draw incremental updates (scanline + aircraft)
     aircraftManager.Update();
 
-    // draw cycle
-    tft.fillScreen(lgfx::color888(0, 0, 0));
-
-    // Mask round panel corners
-    DrawRoundMask(tft);
-
-    String renderScanlines = configServer.GetStoredString("scanline");
-    if (renderScanlines.isEmpty() || renderScanlines == "true") {
-        DrawScanLines(tft,
-          SCREEN_SIZE_DIV_2 - 1,
-          SCREEN_SIZE_DIV_2 - 1,
-          SCREEN_SIZE_DIV_2 - 1 + (std::cos(millis() / 3000.0f) * SCREEN_SIZE_DIV_2),
-          SCREEN_SIZE_DIV_2 - 1 + (std::sin(millis() / 3000.0f) * SCREEN_SIZE_DIV_2),
-          20, 128, 5
-        );
-    }
-
-    aircraftManager.Draw(tft);
+    // Poll synchronous web server (ESP8266)
+    configServer.HandleClient();
 }

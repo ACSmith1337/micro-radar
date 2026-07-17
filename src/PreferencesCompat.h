@@ -4,43 +4,26 @@
 #include <Preferences.h>
 
 #elif defined(ARDUINO_ARCH_ESP8266)
-// ESP8266 has no Preferences NVS — shim it with EEPROM.
-// Supports only the subset we use: begin(), getString(), putString(), end()
-#include <EEPROM.h>
+// ESP8266: LittleFS + JSON config — reliable, no corruption
+#include <LittleFS.h>
+#include <ArduinoJson.h>
+#include <string.h>
+
+#define CONFIG_JSON_PATH "/config.json"
 
 class Preferences {
 private:
-    static const uint32_t EEPROM_SIZE = 2048;
-    static const uint16_t SLOT_SIZE   = 64;
-    static const uint16_t NUM_SLOTS   = 31; // Reserve last slot for magic byte
-    static const uint16_t MAGIC_OFF   = EEPROM_SIZE - 64; // Start of reserved slot
+    const char* _namespace = nullptr;
     bool _opened = false;
 
-    uint8_t crc8(const uint8_t* data, size_t len) {
-        uint8_t crc = 0;
-        for (size_t i = 0; i < len; i++) {
-            uint8_t in = data[i];
-            for (int j = 0; j < 8; j++) {
-                crc ^= (in >> j) & 1;
-                crc = crc & 1 ? (crc >> 1) ^ 0x8C : crc >> 1;
-            }
-        }
-        return crc;
-    }
-
 public:
-    bool begin(const char* partition, bool readOnly = false) {
+    bool begin(const char* ns, bool readOnly = false) {
         (void)readOnly;
-        EEPROM.begin(EEPROM_SIZE);
-        // Magic byte at MAGIC_OFF (start of reserved last slot)
-        uint8_t magic = EEPROM.read(MAGIC_OFF);
-        if (magic != 0xAA) {
-            Serial.println("[EEPROM] First boot — clearing EEPROM...");
-            for (uint16_t i = 0; i < MAGIC_OFF + SLOT_SIZE; i++) {
-                EEPROM.write(i, 0xFF);
-            }
-            EEPROM.write(MAGIC_OFF, 0xAA);
-            EEPROM.commit();
+        _namespace = ns;
+        if (!LittleFS.begin()) {
+            Serial.println("[FS] Mounting LittleFS...");
+            LittleFS.format();
+            LittleFS.begin();
         }
         _opened = true;
         return true;
@@ -48,69 +31,70 @@ public:
 
     void end() {
         if (_opened) {
-            EEPROM.commit();
             _opened = false;
         }
     }
 
     String getString(const char* key, const String& def = "") {
         if (!_opened) return def;
-        size_t klen = strlen(key);
-        Serial.printf("[EEPROM] getString('%s', len=%d): scanning %d slots\n", key, klen, NUM_SLOTS);
-        for (uint16_t slot = 0; slot < NUM_SLOTS; slot++) {
-            uint16_t off = slot * SLOT_SIZE;
-            uint8_t kl = EEPROM.read(off);
-            if (kl == 0xFF || kl != klen || kl > 56) continue;
-            bool match = true;
-            for (size_t i = 0; i < klen; i++) {
-                if (EEPROM.read(off + 1 + i) != key[i]) { match = false; break; }
-            }
-            if (!match || EEPROM.read(off + 1 + kl) != 0) continue;
-            uint16_t vl = (EEPROM.read(off + 1 + kl + 1) << 8) | EEPROM.read(off + 1 + kl + 2);
-            if (vl > 52) continue;
-            String val;
-            for (uint16_t i = 0; i < vl; i++) {
-                val += (char)EEPROM.read(off + 1 + kl + 3 + i);
-            }
-            Serial.printf("[EEPROM] getString('%s') FOUND at slot %d, vl=%d → '%s'\n", key, slot, vl, val.c_str());
-            return val;
-        }
-        Serial.printf("[EEPROM] getString('%s') NOT FOUND → returning default '%s'\n", key, def.c_str());
+        if (!LittleFS.exists(CONFIG_JSON_PATH)) return def;
+
+        File f = LittleFS.open(CONFIG_JSON_PATH, "r");
+        if (!f) return def;
+
+        size_t len = f.size();
+        std::unique_ptr<char[]> buf(new char[len + 1]);
+        f.readBytes(buf.get(), len);
+        buf[len] = '\0';
+        f.close();
+
+        StaticJsonDocument<512> doc;
+        DeserializationError err = deserializeJson(doc, buf.get());
+        if (err) return def;
+
+        const char* val = doc[key];
+        if (val) return String(val);
         return def;
     }
 
     void putString(const char* key, const String& value) {
         if (!_opened) return;
-        size_t klen = strlen(key);
-        size_t vlen = value.length();
-        if (klen + vlen + 4 > 56) return;
 
-        uint16_t targetOff = 0;
-        bool found = false;
-        for (uint16_t slot = 0; slot < NUM_SLOTS; slot++) {
-            uint16_t off = slot * SLOT_SIZE;
-            uint8_t kl = EEPROM.read(off);
-            if (kl == 0xFF || kl > 56) { targetOff = off; found = true; break; } // uninitialized
-            if (kl != klen) continue;
-            bool match = true;
-            for (size_t i = 0; i < klen; i++) {
-                if (EEPROM.read(off + 1 + i) != key[i]) { match = false; break; }
+        StaticJsonDocument<512> doc;
+
+        // Load existing config
+        bool loadExisting = false;
+        if (LittleFS.exists(CONFIG_JSON_PATH)) {
+            File f = LittleFS.open(CONFIG_JSON_PATH, "r");
+            if (f) {
+                size_t len = f.size();
+                std::unique_ptr<char[]> buf(new char[len + 1]);
+                f.readBytes(buf.get(), len);
+                buf[len] = '\0';
+                f.close();
+
+                DeserializationError err = deserializeJson(doc, buf.get());
+                if (!err) loadExisting = true;
             }
-            if (match) { targetOff = off; found = true; break; }
         }
-        if (!found) {
-            Serial.printf("[EEPROM] putString('%s') FAILED - no free slot\n", key);
+
+        // Set value
+        doc[key] = value.c_str();
+
+        // Save
+        File f = LittleFS.open(CONFIG_JSON_PATH, "w");
+        if (!f) {
+            Serial.printf("[FS] Failed to open %s for write\n", CONFIG_JSON_PATH);
             return;
         }
 
-        EEPROM.write(targetOff, (uint8_t)klen);
-        for (size_t i = 0; i < klen; i++) EEPROM.write(targetOff + 1 + i, key[i]);
-        uint8_t dataOff = targetOff + 1 + klen;
-        EEPROM.write(dataOff, (uint8_t)0);
-        EEPROM.write(dataOff + 1, (uint8_t)(vlen >> 8));
-        EEPROM.write(dataOff + 2, (uint8_t)(vlen & 0xFF));
-        for (size_t i = 0; i < vlen; i++) EEPROM.write(dataOff + 3 + i, value[i]);
-        Serial.printf("[EEPROM] putString('%s'='%s') → slot %d (offset=%d)\n", key, value.c_str(), targetOff / SLOT_SIZE, targetOff);
+        if (serializeJson(doc, f) == 0) {
+            Serial.println("[FS] Failed to serialize config");
+        }
+        f.close();
+
+        Serial.printf("[FS] Saved %s = '%s'\n", key, value.c_str());
     }
 };
+
 #endif

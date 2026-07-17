@@ -35,12 +35,22 @@ void AircraftManager::Initialise()
     Serial.printf("[RADAR] Config: lat=%.6f lon=%.6f rad=%.6f scan=%d tri=%d info=%d interval=%lu\n",
                    lat, lon, rad, displayScanLine, displayTriangles, displayInfoText, fetchInterval);
 
-    // Full screen clear — grid drawn each frame in UpdateDisplay()
-    tft.fillScreen(CLR_BG);
+    // Initial grid + scan draw
+    DrawRadarGrid();
+    if (displayScanLine) DrawScanLine();
 }
 
 void AircraftManager::Update()
 {
+    // Scan line refresh at ~10fps — redraws grid (erases old scan) + new scan position
+    static uint32_t lastScanDraw = 0;
+    if (millis() - lastScanDraw >= 100) {
+        DrawRadarGrid();
+        DrawScanLine();
+        lastScanDraw = millis();
+    }
+
+    // Fetch aircraft data on separate interval
     if (millis() - lastFetch >= fetchInterval) {
         FetchLocal();
         lastFetch = millis();
@@ -50,8 +60,7 @@ void AircraftManager::Update()
 
 void AircraftManager::UpdateDisplay()
 {
-    // ── Draw the grid every frame (fast, no clearing) ──
-    DrawRadarGrid();
+    // Grid + scan handled in Update() at 10fps — this only updates aircraft
 
     // Erase aircraft that are no longer tracked
     std::vector<String> toRemove;
@@ -88,8 +97,6 @@ void AircraftManager::UpdateDisplay()
             lastPositions[icao] = {x, y, false};
         }
     }
-
-    DrawScanLine();
 }
 
 void AircraftManager::Draw(LGFX& /*buf*/)

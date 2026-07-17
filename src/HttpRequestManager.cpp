@@ -186,34 +186,32 @@ HttpResult HttpRequestManager::Get(const String& url, const std::vector<std::pai
     // Require 2xx status — read body in chunks with yield() between reads
     // so the WiFi stack + rendering task get time slices during network I/O
     if (statusCode >= 200 && statusCode < 300) {
-        result.success = true;
         // Chunked read: 256 bytes per chunk, yield between each
-        constexpr int CHUNK = 256;
-        uint8_t buf[CHUNK];
-        while (client.connected()) {
-            int avail = client.available();
-            if (avail > 0) {
-                int toRead = std::min(avail, CHUNK);
-                if (toRead < 1) {
-                    yield();
-                    delay(1);
-                    continue;
-                }
-                if ((int)result.response.length() + toRead > MAX_HTTP_BODY) {
-                    toRead = MAX_HTTP_BODY - (int)result.response.length();
-                    if (toRead < 1) break;
-                }
-                buf[toRead] = '\0';
-                int n = client.read(buf, toRead);
-                if (n > 0) {
-                    buf[n] = '\0';
-                    result.response += (const char*)buf;
-                }
-            } else {
-                yield(); // Let rendering run while waiting for data
-                delay(1);
-            }
-        }
+         // IMPORTANT: keep draining buffer even after connection closes —
+         // server may have sent the last chunk before closing the TCP connection
+         constexpr int CHUNK = 256;
+         uint8_t buf[CHUNK + 1];
+         while (client.connected() || client.available()) {
+             int avail = client.available();
+             if (avail > 0) {
+                 int toRead = std::min(avail, CHUNK);
+                 if ((int)result.response.length() + toRead > MAX_HTTP_BODY) {
+                     toRead = MAX_HTTP_BODY - (int)result.response.length();
+                     if (toRead < 1) break;
+                 }
+                 buf[toRead] = '\0';
+                 int n = client.read(buf, toRead);
+                 if (n > 0) {
+                     buf[n] = '\0';
+                     result.response += (const char*)buf;
+                 }
+             } else {
+                 yield(); // Let rendering run while waiting for data
+                 delay(1);
+                 // Connection closed and buffer drained — done
+                 if (!client.connected()) break;
+             }
+         }
     } else {
         result.success = false;
         result.errorMessage = "HTTP " + String(statusCode);

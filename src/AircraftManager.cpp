@@ -308,6 +308,11 @@ void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& track
 
 std::pair<int, int> AircraftManager::ProjectCoordinateToScreen(float predLat, float predLon) const
 {
+    // Guard against zero/negative radius (prevents INF/NaN)
+    if (rad <= 0.001f) {
+        return std::make_pair(999, 999); // Offscreen
+    }
+
     double dx = predLat - lat;
     double dy = (predLon - lon) * std::cos(lat * 3.14159 / 180.0);
     double bearing = std::atan2(dy, dx) * 180.0 / 3.14159;
@@ -336,6 +341,12 @@ void AircraftManager::FetchLocal()
         return;
     }
 
+    // Cap response size to prevent heap exhaustion on ESP8266
+    if (result.response.length() > 8192) {
+        Serial.println("[FETCH] Response too large, discarding");
+        return;
+    }
+
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, result.response);
     if (err) {
@@ -350,8 +361,9 @@ void AircraftManager::FetchLocal()
     }
 
     std::map<String, SimpleAircraft> next;
+    constexpr int MAX_AIRCRAFT = 30; // Prevent memory exhaustion in dense airspace
 
-    for (int i = 0; i < arr.size(); i++) {
+    for (int i = 0; i < arr.size() && next.size() < MAX_AIRCRAFT; i++) {
         auto item = arr[i];
         const char* hexVal = item["hex"];
         if (!hexVal) continue;

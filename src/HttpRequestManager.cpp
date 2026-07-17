@@ -1,23 +1,41 @@
 #include "HttpRequestManager.h"
 
+constexpr int HTTP_TIMEOUT_MS = 5000; // 5 second request timeout
+
+static bool TimedWaitAvailable(WiFiClient& client, int timeout_ms)
+{
+    uint32_t start = millis();
+    while (client.connected() && !client.available()) {
+        if (millis() - start > timeout_ms) return false;
+        delay(5);
+    }
+    return client.connected();
+}
+
+static bool ReadHeaderTimeout(WiFiClient& client, int timeout_ms)
+{
+    uint32_t start = millis();
+    String line = client.readStringUntil('\n');
+    while (line.length() > 2 && (millis() - start < timeout_ms)) {
+        line = client.readStringUntil('\n');
+    }
+    return client.connected();
+}
+
 String HttpRequestManager::BuildQueryString(const std::vector<std::pair<String, String>>& params) const
 {
     if (params.empty())
         return "";
 
     String queryStream = "?";
-
     bool first = true;
     for (const auto& [key, value] : params)
     {
         if (!first)
             queryStream += "&";
-
         queryStream += key + "=" + value;
-
         first = false;
     }
-
     return queryStream;
 }
 
@@ -31,16 +49,15 @@ HttpResult HttpRequestManager::Get(const String& url, const std::vector<std::pai
 
     http.begin(fullUrl);
 
-    // add headers to request
     for (const auto& header : headers) {
         http.addHeader(header.first, header.second);
     }
 
-    // send request and handle response
     int responseCode = http.GET();
     result.statusCode = responseCode;
 
-    if (responseCode > 0) {
+    // Require 2xx status
+    if (responseCode >= 200 && responseCode < 300) {
         result.success = true;
         result.response = http.getString();
     }
@@ -63,16 +80,14 @@ HttpResult HttpRequestManager::Post(const String& url, const String& body, const
 
     http.begin(url);
 
-    // add headers to request
     for (const auto& header : headers) {
         http.addHeader(header.first, header.second);
     }
 
-    // send request and handle response
     int responseCode = http.POST(body);
     result.statusCode = responseCode;
 
-    if (responseCode > 0) {
+    if (responseCode >= 200 && responseCode < 300) {
         result.success = true;
         result.response = http.getString();
     }
@@ -91,16 +106,14 @@ HttpResult HttpRequestManager::Post(const String& url, const String& body, const
 
 #elif defined(ARDUINO_ARCH_ESP8266)
 
-// Raw WiFiClient implementation for ESP8266 — avoids ESP8266HTTPClient enum conflicts
 HttpResult HttpRequestManager::Get(const String& url, const std::vector<std::pair<String, String>>& params, const std::vector<std::pair<String, String>>& headers) {
     HttpResult result{ false, 0, "", "" };
 
     const String queryParams = BuildQueryString(params);
     const String fullUrl = url + queryParams;
 
-    // Parse host and path from URL (assuming http://)
     const char* url_cstr = fullUrl.c_str();
-    int schemeEnd = 7; // skip "http://"
+    int schemeEnd = 7;
     int pathStart = fullUrl.indexOf('/', schemeEnd);
     if (pathStart == -1) pathStart = fullUrl.length();
 
@@ -108,7 +121,6 @@ HttpResult HttpRequestManager::Get(const String& url, const std::vector<std::pai
     String path = fullUrl.substring(pathStart);
     int port = 80;
 
-    // Check for custom port
     int colonPos = host.indexOf(':');
     if (colonPos != -1) {
         port = host.substring(colonPos + 1).toInt();
@@ -122,7 +134,6 @@ HttpResult HttpRequestManager::Get(const String& url, const std::vector<std::pai
         return result;
     }
 
-    // Build HTTP request
     client.print("GET ");
     client.print(path);
     client.println(" HTTP/1.1");
@@ -138,37 +149,36 @@ HttpResult HttpRequestManager::Get(const String& url, const std::vector<std::pai
     client.println("Connection: close");
     client.println();
 
-    // Read response
+    // Wait for response with timeout
+    if (!TimedWaitAvailable(client, HTTP_TIMEOUT_MS)) {
+        result.errorMessage = "Timeout waiting for response";
+        client.stop();
+        Serial.println("[GET] Timeout: " + host);
+        return result;
+    }
+
     int statusCode = 0;
-    String statusCodeLine;
-    while (client.connected() && !client.available()) { delay(10); }
-    if (client.connected()) {
-        statusCodeLine = client.readStringUntil('\r');
-        // "HTTP/1.1 200 OK"
-        int space1 = statusCodeLine.indexOf(' ');
-        int space2 = statusCodeLine.indexOf(' ', space1 + 1);
-        if (space1 > 0 && space2 > space1) {
-            statusCode = statusCodeLine.substring(space1 + 1, space2).toInt();
-        }
+    String statusCodeLine = client.readStringUntil('\r');
+    int space1 = statusCodeLine.indexOf(' ');
+    int space2 = statusCodeLine.indexOf(' ', space1 + 1);
+    if (space1 > 0 && space2 > space1) {
+        statusCode = statusCodeLine.substring(space1 + 1, space2).toInt();
     }
 
     result.statusCode = statusCode;
 
-    // Skip headers until empty line
-    String headerLine;
-    while (client.connected()) {
-        headerLine = client.readStringUntil('\n');
-        if (headerLine.length() <= 2) break; // empty line
-    }
+    // Skip headers with timeout
+    ReadHeaderTimeout(client, HTTP_TIMEOUT_MS);
 
-    // Read body
-    if (statusCode > 0) {
+    // Require 2xx status
+    if (statusCode >= 200 && statusCode < 300) {
         result.success = true;
         result.response = client.readString();
     } else {
-        result.errorMessage = "Invalid response";
-        Serial.print("[GET] Invalid response from ");
-        Serial.println(host);
+        result.success = false;
+        result.errorMessage = "HTTP " + String(statusCode);
+        // Drain remaining body to close connection cleanly
+        client.stop();
     }
 
     client.stop();
@@ -179,7 +189,6 @@ HttpResult HttpRequestManager::Post(const String& url, const String& body, const
 {
     HttpResult result{ false, 0, "", "" };
 
-    // Parse host and path
     int schemeEnd = url.indexOf('://');
     schemeEnd = (schemeEnd >= 0) ? schemeEnd + 3 : 0;
     int pathStart = url.indexOf('/', schemeEnd);
@@ -220,40 +229,36 @@ HttpResult HttpRequestManager::Post(const String& url, const String& body, const
     client.println("Connection: close");
     client.println();
 
-    // Send body
     if (body.length() > 0) {
         client.print(body);
     }
 
-    // Read response
+    if (!TimedWaitAvailable(client, HTTP_TIMEOUT_MS)) {
+        result.errorMessage = "Timeout waiting for response";
+        client.stop();
+        Serial.println("[POST] Timeout: " + host);
+        return result;
+    }
+
     int statusCode = 0;
-    String statusCodeLine;
-    while (client.connected() && !client.available()) { delay(10); }
-    if (client.connected()) {
-        statusCodeLine = client.readStringUntil('\r');
-        int space1 = statusCodeLine.indexOf(' ');
-        int space2 = statusCodeLine.indexOf(' ', space1 + 1);
-        if (space1 > 0 && space2 > space1) {
-            statusCode = statusCodeLine.substring(space1 + 1, space2).toInt();
-        }
+    String statusCodeLine = client.readStringUntil('\r');
+    int space1 = statusCodeLine.indexOf(' ');
+    int space2 = statusCodeLine.indexOf(' ', space1 + 1);
+    if (space1 > 0 && space2 > space1) {
+        statusCode = statusCodeLine.substring(space1 + 1, space2).toInt();
     }
 
     result.statusCode = statusCode;
 
-    // Skip headers
-    String headerLine;
-    while (client.connected()) {
-        headerLine = client.readStringUntil('\n');
-        if (headerLine.length() <= 2) break;
-    }
+    ReadHeaderTimeout(client, HTTP_TIMEOUT_MS);
 
-    if (statusCode > 0) {
+    if (statusCode >= 200 && statusCode < 300) {
         result.success = true;
         result.response = client.readString();
     } else {
-        result.errorMessage = "Invalid response";
-        Serial.print("[POST] Invalid response from ");
-        Serial.println(host);
+        result.success = false;
+        result.errorMessage = "HTTP " + String(statusCode);
+        client.stop();
     }
 
     client.stop();

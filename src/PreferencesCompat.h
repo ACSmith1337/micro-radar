@@ -21,9 +21,13 @@ public:
         (void)readOnly;
         _namespace = ns;
         if (!LittleFS.begin()) {
-            Serial.println("[FS] Mounting LittleFS...");
-            LittleFS.format();
-            LittleFS.begin();
+            Serial.println("[FS] Mount failed — retrying once");
+            delay(100);
+            if (!LittleFS.begin()) {
+                Serial.println("[FS] Critical: LittleFS unavailable. Config will use defaults.");
+                _opened = false;
+                return false;
+            }
         }
         _opened = true;
         return true;

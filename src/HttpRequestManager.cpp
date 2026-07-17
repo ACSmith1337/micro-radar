@@ -15,9 +15,14 @@ static bool TimedWaitAvailable(WiFiClient& client, int timeout_ms)
 static bool ReadHeaderTimeout(WiFiClient& client, int timeout_ms)
 {
     uint32_t start = millis();
-    String line = client.readStringUntil('\n');
-    while (line.length() > 2 && (millis() - start < timeout_ms)) {
-        line = client.readStringUntil('\n');
+    while (client.connected() && (millis() - start < timeout_ms)) {
+        if (!client.available()) {
+            delay(5);
+            continue;
+        }
+        String line = client.readStringUntil('\n');
+        // Empty line = end of headers
+        if (line.length() <= 2) return true;
     }
     return client.connected();
 }
@@ -157,8 +162,13 @@ HttpResult HttpRequestManager::Get(const String& url, const std::vector<std::pai
         return result;
     }
 
-    int statusCode = 0;
+    // Read HTTP status line (e.g. "HTTP/1.1 200 OK\r")
     String statusCodeLine = client.readStringUntil('\r');
+    // Consume trailing \n from CRLF — prevents ReadHeaderTimeout
+    // from mistaking bare \n as end-of-headers
+    if (client.available()) client.read();
+
+    int statusCode = 0;
     int space1 = statusCodeLine.indexOf(' ');
     int space2 = statusCodeLine.indexOf(' ', space1 + 1);
     if (space1 > 0 && space2 > space1) {
@@ -240,8 +250,11 @@ HttpResult HttpRequestManager::Post(const String& url, const String& body, const
         return result;
     }
 
-    int statusCode = 0;
+    // Read HTTP status line + consume trailing \n from CRLF
     String statusCodeLine = client.readStringUntil('\r');
+    if (client.available()) client.read();
+
+    int statusCode = 0;
     int space1 = statusCodeLine.indexOf(' ');
     int space2 = statusCodeLine.indexOf(' ', space1 + 1);
     if (space1 > 0 && space2 > space1) {

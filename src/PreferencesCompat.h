@@ -47,7 +47,7 @@ public:
         for (uint16_t slot = 0; slot < (EEPROM_SIZE / SLOT_SIZE); slot++) {
             uint16_t off = slot * SLOT_SIZE;
             uint8_t kl = EEPROM.read(off);
-            if (kl == 0 || kl > klen || kl > 56) continue;
+            if (kl == 0xFF || kl != klen || kl > 56) continue;
             bool match = true;
             for (size_t i = 0; i < klen; i++) {
                 if (EEPROM.read(off + 1 + i) != key[i]) { match = false; break; }
@@ -75,7 +75,7 @@ public:
         for (uint16_t slot = 0; slot < (EEPROM_SIZE / SLOT_SIZE); slot++) {
             uint16_t off = slot * SLOT_SIZE;
             uint8_t kl = EEPROM.read(off);
-            if (kl == 0 || kl > 56) { targetOff = off; found = true; break; } // 0xFF = uninitialized
+            if (kl == 0xFF || kl > 56) { targetOff = off; found = true; break; } // uninitialized
             if (kl != klen) continue;
             bool match = true;
             for (size_t i = 0; i < klen; i++) {

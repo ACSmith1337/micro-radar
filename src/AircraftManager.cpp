@@ -3,17 +3,17 @@
 #include <ArduinoJson.h>
 #include <cmath>
 
-// ─── Cold war radar phosphor palette ───
+// ─── Cold war radar phosphor palette (P1 GREEN CRT) ───
 constexpr uint16_t CLR_BG          = 0x0000;       // Pure black
-constexpr uint16_t CLR_RING        = 0x3291;       // Dim amber ring
-constexpr uint16_t CLR_RING_BRIGHT = 0x7FA0;       // Bright amber labels
-constexpr uint16_t CLR_SCAN        = 0x3FFF;       // Bright amber scan line
-constexpr uint16_t CLR_GLOW        = 0x3BEF;       // Scan glow behind line
-constexpr uint16_t CLR_TRAIL       = 0x1A79;       // Phosphor trail
-constexpr uint16_t CLR_CROSSHAIR   = 0x2108;       // Very dim crosshair
+constexpr uint16_t CLR_RING        = 0x0520;       // Dim green ring
+constexpr uint16_t CLR_RING_BRIGHT = 0x07BE;       // Bright green labels
+constexpr uint16_t CLR_SCAN        = 0x07FF;       // Bright green scan line
+constexpr uint16_t CLR_GLOW        = 0x05BF;       // Scan glow behind line
+constexpr uint16_t CLR_TRAIL       = 0x0285;       // Phosphor trail fade
+constexpr uint16_t CLR_CROSSHAIR   = 0x0210;       // Very dim crosshair
 constexpr uint16_t CLR_COMMERIAL   = 0x001F;       // Deep blue
 constexpr uint16_t CLR_MILITARY    = 0xF800;       // Red
-constexpr uint16_t CLR_UNKNOWN     = 0x3FFF;       // Amber (no squawk)
+constexpr uint16_t CLR_UNKNOWN     = 0x07FF;       // Green (no squawk)
 
 // ─── Timing ───
 constexpr uint32_t SCAN_INTERVAL   = 33;           // ~30fps
@@ -169,9 +169,11 @@ void AircraftManager::DrawRadarFrame()
         cx + (int)(prevC * r), cy - (int)(prevS * r),
         CLR_SCAN);
 
-    // ── Erase tail (90° behind) ──
-    float tailC = headS;   // cos(θ+π/2)
-    float tailS = -headC;  // sin(θ+π/2)
+    // ── Erase tail (60° behind = θ - π/3) ──
+    // cos(θ-π/3) = cos(θ)·0.5 + sin(θ)·0.866
+    // sin(θ-π/3) = sin(θ)·0.5 - cos(θ)·0.866
+    float tailC = headC * 0.5f + headS * 0.866f;
+    float tailS = headS * 0.5f - headC * 0.866f;
     float eraseC = tailC + tailS * DEG1;
     float eraseS = tailS - tailC * DEG1;
     tft.fillTriangle(cx, cy,
@@ -187,22 +189,28 @@ void AircraftManager::DrawRadarFrame()
     }
 }
 
-// ── Draw the phosphor trail (90° behind scan line) ──
+// ── Draw the phosphor trail (60° behind scan line) ──
+// 60° = classic radar look, less SPI work than 90°
+// Trail redraws at 5fps — sufficient for phosphor illusion
 void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
 {
-    float tailC = headS;   // 90° behind head
-    float tailS = -headC;
+    // Tail = θ - π/3 (60° behind head)
+    // cos(θ-π/3) = cos(θ)·0.5 + sin(θ)·0.866
+    // sin(θ-π/3) = sin(θ)·0.5 - cos(θ)·0.866
+    float tailC = headC * 0.5f + headS * 0.866f;
+    float tailS = headS * 0.5f - headC * 0.866f;
 
-    float step = 1.5708f / 6.0f; // 90° over 6 segments
+    // 6 segments from tail to head — dim → bright
+    float step = 1.0472f / 6.0f; // π/3 over 6 steps
     float segC = tailC;
     float segS = tailS;
 
     for (int i = 0; i < 6; i++) {
         RotateAngle(segC, segS, step);
         uint16_t color;
-        if (i < 1)  color = CLR_SCAN;
-        else if (i < 2) color = CLR_GLOW;
-        else          color = CLR_TRAIL;
+        if (i >= 5)   color = CLR_SCAN;    // Bright tip (1 segment at head)
+        else if (i >= 3) color = CLR_GLOW;  // Glow (2 segments)
+        else          color = CLR_TRAIL;    // Fade (3 segments)
         tft.fillTriangle(cx, cy,
             cx + (int)(segC * r),   cy - (int)(segS * r),
             cx + (int)(tailC * r),  cy - (int)(tailS * r),
@@ -297,7 +305,7 @@ void AircraftManager::DrawRadarGrid() const
 
 void AircraftManager::ErasePosition(int x, int y) const
 {
-    tft.fillCircle(x, y, 6, CLR_BG);
+    tft.fillCircle(x, y, 8, CLR_BG);
 }
 
 // ── Draw aircraft blip ──
@@ -312,15 +320,18 @@ void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac) c
     }
 
     if (displayTriangles) {
-        // Heading arrow
-        float hRad = ac.heading * 0.0174533f; // degrees → radians
-        int tx = x + (int)(cos(hRad) * 6.0f);
-        int ty = y - (int)(sin(hRad) * 6.0f);
+        // Heading arrow — 10px length for visibility
+        float hRad = ac.heading * 0.0174533f;
+        int tx = x + (int)(cos(hRad) * 10.0f);
+        int ty = y - (int)(sin(hRad) * 10.0f);
         tft.drawLine(x, y, tx, ty, color);
-        tft.drawPixel(x, y, color);
+        // Arrowhead
+        int ax = tx + (int)(cos(hRad) * 3.0f);
+        int ay = ty - (int)(sin(hRad) * 3.0f);
+        tft.fillCircle(ax, ay, 2, color);
     } else {
-        // Blip
-        tft.fillCircle(x, y, 2, color);
+        // Blip — 3px filled circle
+        tft.fillCircle(x, y, 3, color);
     }
 }
 

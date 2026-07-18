@@ -36,13 +36,20 @@ Everything you need is below. I've linked products I used and recommend for ease
 
 ### Accounts / API
 
-This project uses OpenSky's API for retrieving flight data.
+This project supports two data sources:
 
-I highly recommend making an account, as it's free, and allows the radar to make many more requests per day (400 -> 4000), which makes the live view much more accurate. However, it isn't necessary if you prefer.
+1. **Local readsb/dump1090/tar1090 endpoint (recommended)**
+   - Real-time local receiver data on your LAN
+   - Typical paths:
+     - `/data/aircraft.json` (readsb / dump1090-fa)
+     - `/tar1090/data/aircraft.json` (tar1090)
+2. **OpenSky Network (optional fallback)**
+   - Cloud API with rate limits
+   - Useful if you don't run a local ADS-B receiver
 
-You can sign up [here](https://opensky-network.org), or search "OpenSky".
+If you want OpenSky, create a free account [here](https://opensky-network.org). Authenticated usage increases request allowance compared to anonymous usage.
 
-Further info on what to do with the account is in the usage section.
+For best results and lowest latency, use a local receiver as your primary source.
 
 ## Assembly
 
@@ -174,13 +181,21 @@ Once connected to your network, the radar config is accessible at [http://micror
 Here you can set:
 
 - **Location** (latitude and longitude): the centre point of your radar
-- **Radar radius**: how wide the scan extends (in degrees, 2 degrees is the limit to avoid rate limiting)
+- **Radar radius (degrees)**: angular scan range around your center point
+  - Quick guide: `0.5° ≈ 30 NM`, `1.0° ≈ 60 NM`, `2.0° ≈ 120 NM`
+- **Data source**:
+  - `Local readsb/dump1090` (recommended)
+  - `OpenSky` (optional)
+- **Local receiver settings**:
+  - `readsb/dump1090 host` (example: `192.168.1.253`)
+  - `port` (commonly `8080` for readsb/dump1090-fa, sometimes `80`)
+  - `JSON path` (usually `/data/aircraft.json` or `/tar1090/data/aircraft.json`)
 - **Display options**: toggle visual elements
-- **OpenSky credentials**: your client ID and secret (if you've made an account - again, highly recommend!)
+- **OpenSky credentials** (optional): client ID and secret for OpenSky mode
 
 <img width="400" alt="image" src="https://github.com/user-attachments/assets/45e6219c-2672-4197-baad-16ae08180b58" />
 
-If you've made an OpenSky account (which I highly recommend), you can find your credentials under your account settings at opensky-network.org. With authentication, you get 4000 requests per day instead of 400, making the live view much more accurate. Read more about the API [here](https://opensky-network.org).
+If you're running a local receiver, use `Local readsb/dump1090` for fastest and most complete updates. If you prefer cloud mode, OpenSky credentials can be entered from your account settings at opensky-network.org. Read more about the API [here](https://opensky-network.org).
 
 This configuration page is accessible anytime the device is connected to WiFi, so you can tweak settings whenever you want.
 

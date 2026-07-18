@@ -238,6 +238,7 @@ void AircraftManager::DrawRadarFrame()
 
     const int cx = 120, cy = 120;
     const int r = 102;             // Trail tip radius — 8px inside outer ring (110)
+    const int erase_r = r + 2;     // 104 — still 6px inside ring
 
     // ── Advance scan angle CW on screen by 1° per frame ──
     constexpr float DEG1 = 0.0174533f;
@@ -253,75 +254,25 @@ void AircraftManager::DrawRadarFrame()
     float headC = scanState.c;
     float headS = scanState.s;
 
-    // ── Bright scan line: row-by-row to avoid fillTriangle AA bleed ──
-    // Scan line is 1° at leading edge. AA on fillTriangle would deposit
-    // green pixels that persist between frames → green accumulation.
+    // ── Bright scan line (1° wedge at leading edge) ──
     float prevC = headC + headS * DEG1;
     float prevS = headS - headC * DEG1;
-    for (int row = cy - r; row <= cy + r; row++) {
-        int dy = row - cy;
-        int arcX = (int)(sqrtf(fmaxf(0.0f, (float)(r * r - dy * dy))));
-        if (arcX == 0) continue;
-        int xL = cx - arcX, xR = cx + arcX;
-        float pxL = xL - cx, pxR = xR - cx;
-        float py = dy;
-        float hDx = headC, hDy = -headS;
-        float pDx = prevC, pDy = -prevS;
-        float chL = hDx * py - hDy * pxL;
-        float chR = hDx * py - hDy * pxR;
-        float cpL = pDx * py - pDy * pxL;
-        float cpR = pDx * py - pDy * pxR;
-        bool leftIn = chL >= 0 && cpL <= 0;
-        bool rightIn = chR >= 0 && cpR <= 0;
-        if (leftIn && rightIn) {
-            tft.drawFastHLine(xL, row, arcX * 2 + 1, CLR_SCAN);
-        } else if (leftIn) {
-            tft.drawFastHLine(xL, row, arcX + 1, CLR_SCAN);
-        } else if (rightIn) {
-            tft.drawFastHLine(cx, row, arcX + 1, CLR_SCAN);
-        }
-    }
+    tft.fillTriangle(cx, cy,
+        cx + (int)(headC * r), cy - (int)(headS * r),
+        cx + (int)(prevC * r), cy - (int)(prevS * r),
+        CLR_SCAN);
 
-    // ── Clear entire trail + erase zone with black, row-by-row ──
-    // Trail spans 0° to 32° behind head. Erase spans 32° to 42° behind.
-    // Row-by-row arc fill avoids fillTriangle AA edge bleed entirely.
-    float eraseTotal = 42.0f * 0.0174533f;
-    float eraseC = headC * cosf(eraseTotal) + headS * sinf(eraseTotal);
-    float eraseS = headS * cosf(eraseTotal) - headC * sinf(eraseTotal);
-    
-    for (int row = cy - r; row <= cy + r; row++) {
-        int dy = row - cy;
-        int arcX = (int)(sqrtf(fmaxf(0.0f, (float)(r * r - dy * dy))));
-        if (arcX == 0) continue;
-        
-        // Points on arc at this row: (cx - arcX, row) and (cx + arcX, row)
-        // We need to find which angular slice the wedge covers.
-        // Head ray: (headC, -headS). Erase ray: (eraseC, -eraseS).
-        // Cross product to test which side of each ray a point is on.
-        // For CW sweep: points CW from head AND CCW from erase.
-        int xL = cx - arcX, xR = cx + arcX;
-        float pxL = xL - cx, pxR = xR - cx;
-        float py = dy;
-        float hDx = headC, hDy = -headS;
-        float eDx = eraseC, eDy = -eraseS;
-        
-        float chL = hDx * py - hDy * pxL;  // cross(head, left)
-        float ceL = eDx * py - eDy * pxL;  // cross(erase, left)
-        float chR = hDx * py - hDy * pxR;  // cross(head, right)
-        float ceR = eDx * py - eDy * pxR;  // cross(erase, right)
-        
-        // CW from head means cross >= 0, CCW from erase means cross <= 0
-        bool leftIn = chL >= 0 && ceL <= 0;
-        bool rightIn = chR >= 0 && ceR <= 0;
-        
-        if (leftIn && rightIn) {
-            tft.drawFastHLine(xL, row, arcX * 2 + 1, CLR_BG);
-        } else if (leftIn) {
-            tft.drawFastHLine(xL, row, arcX + 1, CLR_BG);
-        } else if (rightIn) {
-            tft.drawFastHLine(cx, row, arcX + 1, CLR_BG);
-        }
-    }
+    // ── Erase tail: 33° behind head (30° trail + 3° margin) ──
+    constexpr float ERASE_COS = 0.83867f;  // cos(33°)
+    constexpr float ERASE_SIN = 0.54464f;  // sin(33°)
+    float eraseC = headC * ERASE_COS + headS * ERASE_SIN;
+    float eraseS = headS * ERASE_COS - headC * ERASE_SIN;
+    float eraseNextC = eraseC + eraseS * DEG1;
+    float eraseNextS = eraseS - eraseC * DEG1;
+    tft.fillTriangle(cx, cy,
+        cx + (int)(eraseC * erase_r), cy - (int)(eraseS * erase_r),
+        cx + (int)(eraseNextC * erase_r), cy - (int)(eraseNextS * erase_r),
+        CLR_BG);
 
     // ── Redraw phosphor trail (16 thin segments, smooth gradient) ──
     DrawTrail(cx, cy, r, headC, headS);
@@ -335,15 +286,20 @@ void AircraftManager::DrawRadarFrame()
     tft.drawCentreString("E", 4, cy - 3, 1);
 }
 
-// ── Draw phosphor trail: 32° behind scan line, 16 segments row-by-row ──
-// Each segment = 2° wedge filled row-by-row to avoid fillTriangle AA bleed.
-// Gradient: 8 black erase segments + 8 green phosphor segments.
+// ── Draw phosphor trail: 32° behind scan line, 16 thin segments ──
 void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
 {
     // Trail starts 32° behind head
     float tailC = headC * TRAIL_TAIL_COS + headS * TRAIL_TAIL_SIN;
     float tailS = headS * TRAIL_TAIL_COS - headC * TRAIL_TAIL_SIN;
 
+    // ── Clear full wedge to black first ──
+    tft.fillTriangle(cx, cy,
+        cx + (int)(headC * r),   cy - (int)(headS * r),
+        cx + (int)(tailC * r),   cy - (int)(tailS * r),
+        CLR_BG);
+
+    // Rotate each segment forward toward head (clockwise = +angle)
     constexpr float STEP = 0.0349066f;  // 2° in radians
     float segC = tailC;
     float segS = tailS;
@@ -351,33 +307,10 @@ void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
     for (int i = 0; i < TRAIL_SEGMENTS; i++) {
         RotateAngle(segC, segS, STEP);
         uint16_t color = TRAIL_GRADIENT[i];
-
-        // Row-by-row fill of 2° wedge from center to arc
-        for (int row = cy - r; row <= cy + r; row++) {
-            int dy = row - cy;
-            int arcX = (int)(sqrtf(fmaxf(0.0f, (float)(r * r - dy * dy))));
-            if (arcX == 0) continue;
-            int xL = cx - arcX, xR = cx + arcX;
-            float pxL = xL - cx, pxR = xR - cx;
-            float py = dy;
-            // segC/segS = leading edge of this segment (closer to head)
-            // tailC/tailS = trailing edge (further from head)
-            float sDx = segC, sDy = -segS;
-            float tDx = tailC, tDy = -tailS;
-            float csL = sDx * py - sDy * pxL;
-            float csR = sDx * py - sDy * pxR;
-            float ctL = tDx * py - tDy * pxL;
-            float ctR = tDx * py - tDy * pxR;
-            bool leftIn = csL >= 0 && ctL <= 0;
-            bool rightIn = csR >= 0 && ctR <= 0;
-            if (leftIn && rightIn) {
-                tft.drawFastHLine(xL, row, arcX * 2 + 1, color);
-            } else if (leftIn) {
-                tft.drawFastHLine(xL, row, arcX + 1, color);
-            } else if (rightIn) {
-                tft.drawFastHLine(cx, row, arcX + 1, color);
-            }
-        }
+        tft.fillTriangle(cx, cy,
+            cx + (int)(segC * r),   cy - (int)(segS * r),
+            cx + (int)(tailC * r),  cy - (int)(tailS * r),
+            color);
         tailC = segC;
         tailS = segS;
     }

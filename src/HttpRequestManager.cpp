@@ -62,11 +62,12 @@ static String ReadBody(WiFiClient& client, int numBytes, int maxBytes)
     uint8_t buf[CHUNK + 1];
     int remaining = numBytes;
 
-    int idleTimeout = 0; // Consecutive empty-reads counter
+    uint32_t start = millis();
+    uint32_t lastProgress = start;
     while (remaining > 0) {
         int avail = client.available();
         if (avail > 0) {
-            idleTimeout = 0;
+            lastProgress = millis();
             int toRead = std::min(avail, std::min(remaining, CHUNK));
             int n = client.read(buf, toRead);
             if (n > 0) {
@@ -77,9 +78,11 @@ static String ReadBody(WiFiClient& client, int numBytes, int maxBytes)
         } else {
             yield();
             delay(1);
-            idleTimeout++;
-            // Give up only after server closed AND no data for 50ms
-            if (!client.connected() && idleTimeout > 50) break;
+            // Give the TCP stack time to surface buffered bytes after FIN.
+            // Abort only after total timeout OR prolonged no-progress stall.
+            uint32_t now = millis();
+            if ((now - start) > HTTP_TIMEOUT_MS) break;
+            if (!client.connected() && (now - lastProgress) > 250) break;
         }
     }
     return result;
@@ -260,6 +263,11 @@ HttpResult HttpRequestManager::Get(const String& url, const std::vector<std::pai
         if (contentLength > 0) {
             // Bulletproof: read exactly Content-Length bytes
             result.response = ReadBody(client, contentLength, MAX_HTTP_BODY);
+            if ((int)result.response.length() < contentLength && contentLength <= MAX_HTTP_BODY) {
+                result.success = false;
+                result.errorMessage = "Truncated body: got " + String(result.response.length()) +
+                                      " of " + String(contentLength);
+            }
         } else {
             // Fallback: drain until connection closes
             result.response = ReadBodyStream(client, MAX_HTTP_BODY);
@@ -287,7 +295,7 @@ HttpResult HttpRequestManager::Post(const String& url, const String& body, const
 {
     HttpResult result{ false, 0, "", "" };
 
-    int schemeEnd = url.indexOf('://');
+    int schemeEnd = url.indexOf("://");
     schemeEnd = (schemeEnd >= 0) ? schemeEnd + 3 : 0;
     int pathStart = url.indexOf('/', schemeEnd);
     if (pathStart == -1) pathStart = url.length();
@@ -352,6 +360,11 @@ HttpResult HttpRequestManager::Post(const String& url, const String& body, const
         result.success = true;
         if (contentLength > 0) {
             result.response = ReadBody(client, contentLength, MAX_HTTP_BODY);
+            if ((int)result.response.length() < contentLength && contentLength <= MAX_HTTP_BODY) {
+                result.success = false;
+                result.errorMessage = "Truncated body: got " + String(result.response.length()) +
+                                      " of " + String(contentLength);
+            }
         } else {
             result.response = ReadBodyStream(client, MAX_HTTP_BODY);
         }

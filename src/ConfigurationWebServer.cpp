@@ -200,31 +200,37 @@ static const char CONFIG_HTML[] PROGMEM = R"(
             ds.addEventListener('change', toggleSections);
             toggleSections();
 
-            // Fetch LCD screenshot and render to canvas
+            // Fetch LCD screenshot and render to canvas (refresh every second)
             (function() {
                 var canvas = document.getElementById('radar-preview');
                 if (!canvas) return;
                 var ctx = canvas.getContext('2d');
                 var imgData = ctx.createImageData(240, 240);
 
-                fetch('/screenshot')
-                    .then(function(r) { return r.arrayBuffer(); })
-                    .then(function(buf) {
-                        var bytes = new Uint8Array(buf);
-                        for (var i = 0, j = 0; i < 240 * 240; i++, j += 2) {
-                            var rgb565 = bytes[j] | (bytes[j+1] << 8);
-                            var r16 = (rgb565 >> 11) & 0x1F;
-                            var g16 = (rgb565 >> 5) & 0x3F;
-                            var b16 = rgb565 & 0x1F;
-                            // Scale 5/6-bit to 8-bit
-                            imgData.data[i*4+0] = (r16 * 527 + 23) >> 6;
-                            imgData.data[i*4+1] = (g16 * 259 + 33) >> 6;
-                            imgData.data[i*4+2] = (b16 * 527 + 23) >> 6;
-                            imgData.data[i*4+3] = 255;
-                        }
-                        ctx.putImageData(imgData, 0, 0);
-                    })
-                    .catch(function() { /* silent — no LCD connected */ });
+                function refreshPreview() {
+                    fetch('/screenshot', { cache: 'no-store' })
+                        .then(function(r) { return r.arrayBuffer(); })
+                        .then(function(buf) {
+                            var bytes = new Uint8Array(buf);
+                            if (bytes.length < 240 * 240 * 2) return; // partial frame
+                            for (var i = 0, j = 0; i < 240 * 240; i++, j += 2) {
+                                var rgb565 = bytes[j] | (bytes[j+1] << 8);
+                                var r16 = (rgb565 >> 11) & 0x1F;
+                                var g16 = (rgb565 >> 5) & 0x3F;
+                                var b16 = rgb565 & 0x1F;
+                                // Scale 5/6-bit to 8-bit
+                                imgData.data[i*4+0] = (r16 * 527 + 23) >> 6;
+                                imgData.data[i*4+1] = (g16 * 259 + 33) >> 6;
+                                imgData.data[i*4+2] = (b16 * 527 + 23) >> 6;
+                                imgData.data[i*4+3] = 255;
+                            }
+                            ctx.putImageData(imgData, 0, 0);
+                        })
+                        .catch(function() { /* silent — no LCD connected */ });
+                }
+
+                refreshPreview();
+                setInterval(refreshPreview, 1000);
             })();
         </script>
     </body>

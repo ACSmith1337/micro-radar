@@ -8,8 +8,9 @@ constexpr int MAX_HTTP_BODY   = 8192; // Cap response size
 static bool TimedWaitAvailable(WiFiClient& client, int timeout_ms)
 {
     uint32_t start = millis();
+    uint32_t timeout = (timeout_ms > 0) ? (uint32_t)timeout_ms : 0U;
     while (client.connected() && !client.available()) {
-        if (millis() - start > timeout_ms) return false;
+        if (millis() - start > timeout) return false;
         delay(5);
     }
     return client.connected();
@@ -32,7 +33,8 @@ static int ReadHeaders(WiFiClient& client, int timeout_ms)
 {
     int contentLength = 0;
     uint32_t start = millis();
-    while (client.connected() && (millis() - start < timeout_ms)) {
+    uint32_t timeout = (timeout_ms > 0) ? (uint32_t)timeout_ms : 0U;
+    while (client.connected() && (millis() - start < timeout)) {
         if (!client.available()) {
             delay(5);
             continue;
@@ -209,8 +211,8 @@ HttpResult HttpRequestManager::Get(const String& url, const std::vector<std::pai
     const String queryParams = BuildQueryString(params);
     const String fullUrl = url + queryParams;
 
-    const char* url_cstr = fullUrl.c_str();
-    int schemeEnd = 7;
+    int schemeEnd = fullUrl.indexOf("://");
+    schemeEnd = (schemeEnd >= 0) ? schemeEnd + 3 : 0;
     int pathStart = fullUrl.indexOf('/', schemeEnd);
     if (pathStart == -1) pathStart = fullUrl.length();
 

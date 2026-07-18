@@ -25,25 +25,23 @@ constexpr int      MAX_AIRCRAFT    = 30;           // heap protection
 constexpr int      MAX_RESP_BYTES  = 8192;         // heap protection
 constexpr float    SCAN_SPEED      = (6.28318f / ROTATION_MS);  // 1 rev / 6s
 
-// ─── Trail: 30° total, 15 segments, 2° each ───
-// Narrower trail = fewer pixels = less SPI time = less CPU blocking
-constexpr int   TRAIL_SEGMENTS    = 15;
+// ── Trail: 30° visual, 32° total with 2° black safety margin ──
+// 16 segments × 2° each = 32° total wedge.
+// Outer 8 segments are black, inner 8 are green gradient.
+constexpr int   TRAIL_SEGMENTS    = 16;
 constexpr float TRAIL_STEP_DEG    = 2.0f;           // 2° per segment
-// Precomputed cos(30°) and sin(30°) for tail calculation
-constexpr float TRAIL_TAIL_COS    = 0.8660254f;     // cos(30°)
-constexpr float TRAIL_TAIL_SIN    = 0.5f;            // sin(30°)
+// Precomputed cos(32°) and sin(32°) for tail calculation
+constexpr float TRAIL_TAIL_COS    = 0.8480481f;     // cos(32°)
+constexpr float TRAIL_TAIL_SIN    = 0.5299193f;     // sin(32°)
 
-// Phosphor green gradient: 15 steps from black ghost to dark green (0x0520)
-// Outer steps are pure black — they erase trail residue each rotation
+// Phosphor green gradient: 16 steps from black to dark green (0x0520)
+// Outer 8 steps are pure black (0x0000) — they erase old trail residue.
+// Inner 8 steps fade from dim green to bright scan tip.
 constexpr uint16_t TRAIL_GRADIENT[] = {
-    0x0000, 0x0000, 0x0000, 0x0000,  // Erase ghost (4 steps — clear old trail)
-    0x0020, 0x0020, 0x0040,           // Dim phosphor decay (3 steps)
-    0x0060, 0x0080,                   // Mid glow (2 steps)
-    0x00C0, 0x0120,                   // Inner glow (2 steps)
-    0x01C0, 0x0260,                   // Bright glow (2 steps)
-    0x0360,                           // Very bright (1 step)
-    0x0520                            // Dark green scan tip (1 step)
-};  // 15 entries = TRAIL_SEGMENTS
+    0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,  // Black erase (8 steps = 16°)
+    0x0060, 0x00A0, 0x0120, 0x01C0,                                    // Phosphor fade-in (4 steps)
+    0x0280, 0x0360, 0x0460, 0x0520                                     // Bright scan glow (4 steps)
+};  // 16 entries = TRAIL_SEGMENTS
 
 // ── Precomputed tick directions (30° increments) ──
 constexpr const float TICK_DIRS[] = {
@@ -240,7 +238,6 @@ void AircraftManager::DrawRadarFrame()
 
     const int cx = 120, cy = 120;
     const int r = 102;             // Trail tip radius — 8px inside outer ring (110)
-    const int erase_r = r + 2;     // 104 — still 6px inside ring
 
     // ── Advance scan angle CW on screen by 1° per frame ──
     constexpr float DEG1 = 0.0174533f;
@@ -264,19 +261,48 @@ void AircraftManager::DrawRadarFrame()
         cx + (int)(prevC * r), cy - (int)(prevS * r),
         CLR_SCAN);
 
-    // ── Erase tail: 33° behind head (30° trail + 3° margin) ──
-    constexpr float ERASE_COS = 0.83867f;  // cos(33°)
-    constexpr float ERASE_SIN = 0.54464f;  // sin(33°)
-    float eraseC = headC * ERASE_COS + headS * ERASE_SIN;
-    float eraseS = headS * ERASE_COS - headC * ERASE_SIN;
-    float eraseNextC = eraseC + eraseS * DEG1;
-    float eraseNextS = eraseS - eraseC * DEG1;
-    tft.fillTriangle(cx, cy,
-        cx + (int)(eraseC * erase_r), cy - (int)(eraseS * erase_r),
-        cx + (int)(eraseNextC * erase_r), cy - (int)(eraseNextS * erase_r),
-        CLR_BG);
+    // ── Clear entire trail + erase zone with black, row-by-row ──
+    // Trail spans 0° to 32° behind head. Erase spans 32° to 42° behind.
+    // Row-by-row arc fill avoids fillTriangle AA edge bleed entirely.
+    float eraseTotal = 42.0f * 0.0174533f;
+    float eraseC = headC * cosf(eraseTotal) + headS * sinf(eraseTotal);
+    float eraseS = headS * cosf(eraseTotal) - headC * sinf(eraseTotal);
+    
+    for (int row = cy - r; row <= cy + r; row++) {
+        int dy = row - cy;
+        int arcX = (int)(sqrtf(fmaxf(0.0f, (float)(r * r - dy * dy))));
+        if (arcX == 0) continue;
+        
+        // Points on arc at this row: (cx - arcX, row) and (cx + arcX, row)
+        // We need to find which angular slice the wedge covers.
+        // Head ray: (headC, -headS). Erase ray: (eraseC, -eraseS).
+        // Cross product to test which side of each ray a point is on.
+        // For CW sweep: points CW from head AND CCW from erase.
+        int xL = cx - arcX, xR = cx + arcX;
+        float pxL = xL - cx, pxR = xR - cx;
+        float py = dy;
+        float hDx = headC, hDy = -headS;
+        float eDx = eraseC, eDy = -eraseS;
+        
+        float chL = hDx * py - hDy * pxL;  // cross(head, left)
+        float ceL = eDx * py - eDy * pxL;  // cross(erase, left)
+        float chR = hDx * py - hDy * pxR;  // cross(head, right)
+        float ceR = eDx * py - eDy * pxR;  // cross(erase, right)
+        
+        // CW from head means cross >= 0, CCW from erase means cross <= 0
+        bool leftIn = chL >= 0 && ceL <= 0;
+        bool rightIn = chR >= 0 && ceR <= 0;
+        
+        if (leftIn && rightIn) {
+            tft.drawFastHLine(xL, row, arcX * 2 + 1, CLR_BG);
+        } else if (leftIn) {
+            tft.drawFastHLine(xL, row, arcX + 1, CLR_BG);
+        } else if (rightIn) {
+            tft.drawFastHLine(cx, row, arcX + 1, CLR_BG);
+        }
+    }
 
-    // ── Redraw phosphor trail (15 thin segments, smooth gradient) ──
+    // ── Redraw phosphor trail (16 thin segments, smooth gradient) ──
     DrawTrail(cx, cy, r, headC, headS);
 
     // ── Bearing labels: redraw every frame so trail never erases them ──
@@ -300,12 +326,13 @@ void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
     float tailS = headS * TRAIL_COS - headC * TRAIL_SIN;
 
     // ── Clear entire 30° wedge to black BEFORE drawing gradient ──
-    // Floating-point rounding between adjacent triangle segments leaves
-    // 1-pixel gaps that accumulate green residue over frames.
-    // Clearing the whole wedge first ensures gaps show black, not old green.
+    // The gradient trail is drawn at radius r. fillTriangle anti-aliases
+    // the edges, so green pixels spill ~4px beyond the arc at r.
+    // Clear radius must extend past the anti-aliased edge.
+    const int clear_r = r + 8;
     tft.fillTriangle(cx, cy,
-        cx + (int)(headC * r),   cy - (int)(headS * r),
-        cx + (int)(tailC * r),   cy - (int)(tailS * r),
+        cx + (int)(headC * clear_r),   cy - (int)(headS * clear_r),
+        cx + (int)(tailC * clear_r),   cy - (int)(tailS * clear_r),
         CLR_BG);
 
     // Rotate each segment forward toward head (clockwise = +angle)

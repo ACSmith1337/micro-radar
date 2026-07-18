@@ -277,6 +277,9 @@ void AircraftManager::DrawRadarFrame()
     // ── Redraw phosphor trail (16 thin segments, smooth gradient) ──
     DrawTrail(cx, cy, r, headC, headS);
 
+    // ── Restore static indicators overwritten by sweep ──
+    DrawRadarGrid();
+
     // ── Bearing labels: redraw every frame so trail never erases them ──
     tft.setTextColor(CLR_RING_BRIGHT);
     tft.setTextSize(1);
@@ -284,6 +287,14 @@ void AircraftManager::DrawRadarFrame()
     tft.drawCentreString("S", cx, 236, 1);
     tft.drawCentreString("W", 236, cy - 3, 1);
     tft.drawCentreString("E", 4, cy - 3, 1);
+
+    // ── Redraw aircraft blips every frame so sweep does not erase targets ──
+    for (const auto& [icao, lp] : lastPositions) {
+        if (!lp.visible || lp.brightness == 0) continue;
+        auto it = trackedAircraft.find(icao);
+        if (it == trackedAircraft.end()) continue;
+        DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness);
+    }
 }
 
 // ── Draw phosphor trail: 32° behind scan line, 16 thin segments ──

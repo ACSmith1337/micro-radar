@@ -319,7 +319,9 @@ void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
 
     for (int i = 0; i < TRAIL_SEGMENTS; i++) {
         RotateAngle(segC, segS, STEP);
-        uint16_t color = TRAIL_GRADIENT[i];
+        // Segment 0 is nearest the head after RotateAngle(), so use reversed index
+        // to keep head bright and tail black.
+        uint16_t color = TRAIL_GRADIENT[TRAIL_SEGMENTS - 1 - i];
         tft.fillTriangle(cx, cy,
             cx + (int)(segC * r),   cy - (int)(segS * r),
             cx + (int)(tailC * r),  cy - (int)(tailS * r),

@@ -18,7 +18,7 @@ constexpr uint16_t CLR_MILITARY    = 0xF800;       // Red
 constexpr uint16_t CLR_UNKNOWN     = 0x0520;       // Dark green
 
 // ─── Timing ───
-constexpr uint32_t SCAN_INTERVAL   = 33;           // ~30fps
+constexpr uint32_t SCAN_INTERVAL   = 40;           // ~25fps, lower CPU load on ESP8266
 constexpr uint32_t ROTATION_MS     = 6000;         // 1 full sweep = 6s
 constexpr uint32_t FETCH_DEFAULT   = ROTATION_MS;  // fetch at each rotation
 constexpr int      MAX_AIRCRAFT    = 30;           // heap protection
@@ -28,8 +28,8 @@ constexpr float    SCAN_SPEED      = (6.28318f / ROTATION_MS);  // 1 rev / 6s
 // ── Trail: 30° visual, 32° total with 2° black safety margin ──
 // 16 segments × 2° each = 32° total wedge.
 // Outer 8 segments are black, inner 8 are green gradient.
-constexpr int   TRAIL_SEGMENTS    = 16;
-constexpr float TRAIL_STEP_DEG    = 2.0f;           // 2° per segment
+constexpr int   TRAIL_SEGMENTS    = 12;
+constexpr float TRAIL_STEP_DEG    = (32.0f / TRAIL_SEGMENTS);
 // Precomputed cos(32°) and sin(32°) for tail calculation
 constexpr float TRAIL_TAIL_COS    = 0.8480481f;     // cos(32°)
 constexpr float TRAIL_TAIL_SIN    = 0.5299193f;     // sin(32°)
@@ -38,10 +38,9 @@ constexpr float TRAIL_TAIL_SIN    = 0.5299193f;     // sin(32°)
 // Outer 8 steps are pure black (0x0000) — they erase old trail residue.
 // Inner 8 steps fade from dim green to bright scan tip.
 constexpr uint16_t TRAIL_GRADIENT[] = {
-    0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,  // Black erase (8 steps = 16°)
-    0x0060, 0x00A0, 0x0120, 0x01C0,                                    // Phosphor fade-in (4 steps)
-    0x0280, 0x0360, 0x0460, 0x0520                                     // Bright scan glow (4 steps)
-};  // 16 entries = TRAIL_SEGMENTS
+    0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,  // Hard black tail erase (6)
+    0x0080, 0x0100, 0x01A0, 0x02A0, 0x03C0, 0x0520   // Fade to scan tip (6)
+};  // 12 entries = TRAIL_SEGMENTS
 
 // ── Precomputed tick directions (30° increments) ──
 constexpr const float TICK_DIRS[] = {
@@ -174,7 +173,7 @@ void AircraftManager::RefreshAircraft()
     std::vector<String> gone;
     for (auto& [icao, lp] : lastPositions) {
         if (!trackedAircraft.count(icao)) {
-            if (lp.visible) ErasePosition(lp.x, lp.y, 8);
+            if (lp.visible) ErasePosition(lp.x, lp.y, 14);
             gone.push_back(icao);
         }
     }
@@ -189,13 +188,13 @@ void AircraftManager::RefreshAircraft()
         if (on) {
             // Erase old position if it moved
             if (lastPositions.count(icao) && lastPositions[icao].visible) {
-                ErasePosition(lastPositions[icao].x, lastPositions[icao].y, 8);
+                ErasePosition(lastPositions[icao].x, lastPositions[icao].y, 14);
             }
             DrawAircraftBlip(x, y, ac, 5);  // full brightness
             lastPositions[icao] = {x, y, true, 5};
         } else {
             if (lastPositions.count(icao) && lastPositions[icao].visible) {
-                ErasePosition(lastPositions[icao].x, lastPositions[icao].y, 8);
+                ErasePosition(lastPositions[icao].x, lastPositions[icao].y, 14);
             }
             lastPositions[icao] = {x, y, false, 0};
         }
@@ -213,7 +212,7 @@ void AircraftManager::DecayAircraft()
 
         if (lp.brightness == 0) {
             // Fully faded — erase with black
-            ErasePosition(lp.x, lp.y, 4);
+            ErasePosition(lp.x, lp.y, 10);
             faded.push_back(icao);
         } else {
             // Redraw at new lower brightness
@@ -237,8 +236,8 @@ void AircraftManager::DrawRadarFrame()
     if (!displayScanLine) return;
 
     const int cx = 120, cy = 120;
-    const int r = 102;             // Trail tip radius — 8px inside outer ring (110)
-    const int erase_r = r + 2;     // 104 — still 6px inside ring
+    const int r = 119;             // Scan/trail to near panel edge
+    const int erase_r = 121;       // slight overdraw to kill edge residue
 
     // ── Advance scan angle CW on screen by 1° per frame ──
     constexpr float DEG1 = 0.0174533f;
@@ -262,15 +261,15 @@ void AircraftManager::DrawRadarFrame()
         cx + (int)(prevC * r), cy - (int)(prevS * r),
         CLR_SCAN);
 
-    // ── Erase tail: 35° behind head (covers 32° trail + safety margin) ──
+    // ── Erase tail: 40° behind head (extra margin for edge cleanup) ──
     // Wider wedge catches sub-pixel rounding gaps that leave ghost pixels.
-    constexpr float ERASE_COS = 0.81915f;  // cos(35°)
-    constexpr float ERASE_SIN = 0.57358f;  // sin(35°)
+    constexpr float ERASE_COS = 0.76604f;  // cos(40°)
+    constexpr float ERASE_SIN = 0.64279f;  // sin(40°)
     float eraseC = headC * ERASE_COS + headS * ERASE_SIN;
     float eraseS = headS * ERASE_COS - headC * ERASE_SIN;
-    // Erase a 3°-wide wedge to fully clear the trailing edge
-    float eraseNextC = eraseC + eraseS * DEG1 * 3;
-    float eraseNextS = eraseS - eraseC * DEG1 * 3;
+    // Erase a 4°-wide wedge to fully clear the trailing edge
+    float eraseNextC = eraseC + eraseS * DEG1 * 4;
+    float eraseNextS = eraseS - eraseC * DEG1 * 4;
     tft.fillTriangle(cx, cy,
         cx + (int)(eraseC * erase_r), cy - (int)(eraseS * erase_r),
         cx + (int)(eraseNextC * erase_r), cy - (int)(eraseNextS * erase_r),
@@ -285,8 +284,8 @@ void AircraftManager::DrawRadarFrame()
     // ── Bearing labels: redraw every frame so trail never erases them ──
     tft.setTextColor(CLR_RING_BRIGHT);
     tft.setTextSize(1);
-    tft.drawCentreString("N", cx, 0, 1);
-    tft.drawCentreString("S", cx, 236, 1);
+    tft.drawCentreString("N", cx, 2, 1);
+    tft.drawCentreString("S", cx, 228, 1);
     tft.drawCentreString("W", 236, cy - 3, 1);
     tft.drawCentreString("E", 4, cy - 3, 1);
 
@@ -312,15 +311,15 @@ void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
         cx + (int)(tailC * r),   cy - (int)(tailS * r),
         CLR_BG);
 
-    // Rotate each segment forward toward head (clockwise = +angle)
-    constexpr float STEP = 0.0349066f;  // 2° in radians
+    // Rotate each segment forward toward head
+    constexpr float STEP = TRAIL_STEP_DEG * 0.0174533f;
     float segC = tailC;
     float segS = tailS;
+    const float tailStartC = tailC;
+    const float tailStartS = tailS;
 
     for (int i = 0; i < TRAIL_SEGMENTS; i++) {
         RotateAngle(segC, segS, STEP);
-        // Segment 0 is nearest the head after RotateAngle(), so use reversed index
-        // to keep head bright and tail black.
         uint16_t color = TRAIL_GRADIENT[TRAIL_SEGMENTS - 1 - i];
         tft.fillTriangle(cx, cy,
             cx + (int)(segC * r),   cy - (int)(segS * r),
@@ -329,6 +328,9 @@ void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
         tailC = segC;
         tailS = segS;
     }
+
+    // Force tail tip to black to prevent edge flash on low-res triangle joins
+    tft.fillCircle(cx + (int)(tailStartC * r), cy - (int)(tailStartS * r), 2, CLR_BG);
 }
 
 // ── Static grid: rings, ticks, crosshairs ──
@@ -400,20 +402,22 @@ void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, u
     uint16_t color = FadeColor(baseColor, brightness);
 
     if (displayTriangles) {
-        // Heading arrow — scale length with brightness
+        // Larger symbol + longer heading indicator
         float hRad = ac.heading * 0.0174533f;
-        float scale = 0.4f + (brightness * 0.12f);  // 0.52 to 1.0
-        int len = (int)(10.0f * scale);
+        float scale = 0.45f + (brightness * 0.13f);  // 0.58 to 1.10
+        int len = (int)(18.0f * scale);              // 10px to 19px
+        int coreRadius = 2 + (brightness >= 4 ? 2 : (brightness >= 2 ? 1 : 0));
+        tft.fillCircle(x, y, coreRadius, color);
         int tx = x + (int)(cos(hRad) * len);
         int ty = y - (int)(sin(hRad) * len);
         tft.drawLine(x, y, tx, ty, color);
         // Arrowhead dot only at higher brightness
         if (brightness >= 3) {
-            tft.fillCircle(tx, ty, 2, color);
+            tft.fillCircle(tx, ty, 3, color);
         }
     } else {
-        // Blip — scale radius with brightness (1px dim ghost to 3px full)
-        int radius = 1 + (brightness >= 4 ? 2 : (brightness >= 2 ? 1 : 0));
+        // Blip size doubled (2px dim ghost to 6px full)
+        int radius = 2 + (brightness >= 4 ? 4 : (brightness >= 2 ? 2 : 0));
         tft.fillCircle(x, y, radius, color);
     }
 }

@@ -13,12 +13,12 @@ constexpr uint16_t CLR_SCAN        = 0x0520;       // Dark green scan line (R=0 
 constexpr uint16_t CLR_GLOW        = 0x0320;       // Scan glow
 constexpr uint16_t CLR_TRAIL       = 0x0120;       // Phosphor fade
 constexpr uint16_t CLR_CROSSHAIR   = 0x00A0;       // Barely visible
-constexpr uint16_t CLR_COMMERIAL   = 0x001F;       // Deep blue
+constexpr uint16_t CLR_COMMERIAL   = 0x07E0;       // Civilian green
 constexpr uint16_t CLR_MILITARY    = 0xF800;       // Red
 constexpr uint16_t CLR_UNKNOWN     = 0x0520;       // Dark green
 
 // ─── Timing ───
-constexpr uint32_t SCAN_INTERVAL   = 40;           // ~25fps, lower CPU load on ESP8266
+constexpr uint32_t SCAN_INTERVAL   = 45;           // ~22fps, lower CPU load on ESP8266
 constexpr uint32_t ROTATION_MS     = 6000;         // 1 full sweep = 6s
 constexpr uint32_t FETCH_DEFAULT   = ROTATION_MS;  // fetch at each rotation
 constexpr int      MAX_AIRCRAFT    = 30;           // heap protection
@@ -26,9 +26,9 @@ constexpr int      MAX_RESP_BYTES  = 8192;         // heap protection
 constexpr float    SCAN_SPEED      = (6.28318f / ROTATION_MS);  // 1 rev / 6s
 
 // ── Trail: 30° visual, 32° total with 2° black safety margin ──
-// 16 segments × 2° each = 32° total wedge.
-// Outer 8 segments are black, inner 8 are green gradient.
-constexpr int   TRAIL_SEGMENTS    = 12;
+// 10 segments spanning 32° total wedge.
+// Outer 6 segments are black, inner 4 are green gradient.
+constexpr int   TRAIL_SEGMENTS    = 10;
 constexpr float TRAIL_STEP_DEG    = (32.0f / TRAIL_SEGMENTS);
 // Precomputed cos(32°) and sin(32°) for tail calculation
 constexpr float TRAIL_TAIL_COS    = 0.8480481f;     // cos(32°)
@@ -39,8 +39,8 @@ constexpr float TRAIL_TAIL_SIN    = 0.5299193f;     // sin(32°)
 // Inner 8 steps fade from dim green to bright scan tip.
 constexpr uint16_t TRAIL_GRADIENT[] = {
     0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,  // Hard black tail erase (6)
-    0x0080, 0x0100, 0x01A0, 0x02A0, 0x03C0, 0x0520   // Fade to scan tip (6)
-};  // 12 entries = TRAIL_SEGMENTS
+    0x0100, 0x01C0, 0x0360, 0x0520                   // Fade to scan tip (4)
+};  // 10 entries = TRAIL_SEGMENTS
 
 // ── Precomputed tick directions (30° increments) ──
 constexpr const float TICK_DIRS[] = {
@@ -330,7 +330,7 @@ void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
     }
 
     // Force tail tip to black to prevent edge flash on low-res triangle joins
-    tft.fillCircle(cx + (int)(tailStartC * r), cy - (int)(tailStartS * r), 2, CLR_BG);
+    tft.fillCircle(cx + (int)(tailStartC * r), cy - (int)(tailStartS * r), 3, CLR_BG);
 }
 
 // ── Static grid: rings, ticks, crosshairs ──

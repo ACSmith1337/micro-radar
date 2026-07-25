@@ -18,10 +18,10 @@ constexpr uint16_t CLR_MILITARY    = 0xF800;       // Red
 constexpr uint16_t CLR_UNKNOWN     = 0x0520;       // Dark green
 
 // ─── Timing ───
-constexpr uint32_t SCAN_INTERVAL   = 45;           // ~22fps, lower CPU load on ESP8266
+constexpr uint32_t SCAN_INTERVAL   = 50;           // ~20fps, lower CPU load on ESP8266
 constexpr uint32_t ROTATION_MS     = 6000;         // 1 full sweep = 6s
 constexpr uint32_t FETCH_DEFAULT   = ROTATION_MS;  // fetch at each rotation
-constexpr int      MAX_AIRCRAFT    = 30;           // heap protection
+constexpr int      MAX_AIRCRAFT    = 24;           // draw/load protection
 constexpr int      MAX_RESP_BYTES  = 8192;         // heap protection
 constexpr float    SCAN_SPEED      = (6.28318f / ROTATION_MS);  // 1 rev / 6s
 
@@ -278,8 +278,12 @@ void AircraftManager::DrawRadarFrame()
     // ── Redraw phosphor trail (16 thin segments, smooth gradient) ──
     DrawTrail(cx, cy, r, headC, headS);
 
-    // ── Restore static indicators overwritten by sweep ──
-    DrawRadarGrid();
+    // ── Restore static indicators overwritten by sweep (throttled) ──
+    // Redrawing every frame can starve ESP8266; 10Hz is sufficient.
+    static uint8_t gridDiv = 0;
+    if ((++gridDiv & 0x01) == 0) {
+        DrawRadarGrid();
+    }
 
     // ── Bearing labels: redraw every frame so trail never erases them ──
     tft.setTextColor(CLR_RING_BRIGHT);
@@ -289,12 +293,15 @@ void AircraftManager::DrawRadarFrame()
     tft.drawCentreString("W", 236, cy - 3, 1);
     tft.drawCentreString("E", 4, cy - 3, 1);
 
-    // ── Redraw aircraft blips every frame so sweep does not erase targets ──
-    for (const auto& [icao, lp] : lastPositions) {
-        if (!lp.visible || lp.brightness == 0) continue;
-        auto it = trackedAircraft.find(icao);
-        if (it == trackedAircraft.end()) continue;
-        DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness);
+    // ── Redraw aircraft blips at half-rate to reduce render load ──
+    static uint8_t blipDiv = 0;
+    if ((++blipDiv & 0x01) == 0) {
+        for (const auto& [icao, lp] : lastPositions) {
+            if (!lp.visible || lp.brightness == 0) continue;
+            auto it = trackedAircraft.find(icao);
+            if (it == trackedAircraft.end()) continue;
+            DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness);
+        }
     }
 }
 
@@ -411,10 +418,7 @@ void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, u
         int tx = x + (int)(cos(hRad) * len);
         int ty = y - (int)(sin(hRad) * len);
         tft.drawLine(x, y, tx, ty, color);
-        // Arrowhead dot only at higher brightness
-        if (brightness >= 3) {
-            tft.fillCircle(tx, ty, 3, color);
-        }
+        // No tip dot: keep a single aircraft core marker + heading vector.
     } else {
         // Blip size doubled (2px dim ghost to 6px full)
         int radius = 2 + (brightness >= 4 ? 4 : (brightness >= 2 ? 2 : 0));

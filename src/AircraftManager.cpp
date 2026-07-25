@@ -206,7 +206,7 @@ void AircraftManager::DecayAircraft()
 {
     std::vector<String> faded;
     for (auto& [icao, lp] : lastPositions) {
-        if (!lp.visible || lp.brightness <= 1) continue;
+        if (!lp.visible || lp.brightness == 0) continue;
 
         lp.brightness--;
 
@@ -267,9 +267,9 @@ void AircraftManager::DrawRadarFrame()
     constexpr float ERASE_SIN = 0.64279f;  // sin(40°)
     float eraseC = headC * ERASE_COS + headS * ERASE_SIN;
     float eraseS = headS * ERASE_COS - headC * ERASE_SIN;
-    // Erase a 4°-wide wedge to fully clear the trailing edge
-    float eraseNextC = eraseC + eraseS * DEG1 * 4;
-    float eraseNextS = eraseS - eraseC * DEG1 * 4;
+    // Erase a 6°-wide wedge to fully clear trailing-edge residue
+    float eraseNextC = eraseC + eraseS * DEG1 * 6;
+    float eraseNextS = eraseS - eraseC * DEG1 * 6;
     tft.fillTriangle(cx, cy,
         cx + (int)(eraseC * erase_r), cy - (int)(eraseS * erase_r),
         cx + (int)(eraseNextC * erase_r), cy - (int)(eraseNextS * erase_r),
@@ -292,6 +292,29 @@ void AircraftManager::DrawRadarFrame()
     tft.drawCentreString("S", cx, 228, 1);
     tft.drawCentreString("W", 236, cy - 3, 1);
     tft.drawCentreString("E", 4, cy - 3, 1);
+
+    // ── PPI behavior: when beam touches a blip, refresh to full brightness ──
+    // Uses angular hit-test against current beam heading.
+    constexpr float BEAM_TOUCH_COS = 0.99905f; // cos(2.5°)
+    for (auto& [icao, lp] : lastPositions) {
+        if (!lp.visible) continue;
+        if (!trackedAircraft.count(icao)) continue;
+
+        int vx = lp.x - cx;
+        int vy = cy - lp.y; // screen Y inverted
+        float d2 = (float)(vx * vx + vy * vy);
+        if (d2 < 16.0f) continue; // skip near center jitter
+
+        float invD = 1.0f / sqrtf(d2);
+        float ux = vx * invD;
+        float uy = vy * invD;
+        float dot = ux * headC + uy * headS;
+
+        if (dot >= BEAM_TOUCH_COS) {
+            lp.brightness = 5;
+            DrawAircraftBlip(lp.x, lp.y, trackedAircraft.at(icao), 5);
+        }
+    }
 
     // ── Redraw aircraft blips at half-rate to reduce render load ──
     static uint8_t blipDiv = 0;
@@ -337,7 +360,7 @@ void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
     }
 
     // Force tail tip to black to prevent edge flash on low-res triangle joins
-    tft.fillCircle(cx + (int)(tailStartC * r), cy - (int)(tailStartS * r), 3, CLR_BG);
+    tft.fillCircle(cx + (int)(tailStartC * r), cy - (int)(tailStartS * r), 4, CLR_BG);
 }
 
 // ── Static grid: rings, ticks, crosshairs ──

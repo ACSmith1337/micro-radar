@@ -262,13 +262,15 @@ void AircraftManager::DrawRadarFrame()
         cx + (int)(prevC * r), cy - (int)(prevS * r),
         CLR_SCAN);
 
-    // ── Erase tail: 33° behind head (30° trail + 3° margin) ──
-    constexpr float ERASE_COS = 0.83867f;  // cos(33°)
-    constexpr float ERASE_SIN = 0.54464f;  // sin(33°)
+    // ── Erase tail: 35° behind head (covers 32° trail + safety margin) ──
+    // Wider wedge catches sub-pixel rounding gaps that leave ghost pixels.
+    constexpr float ERASE_COS = 0.81915f;  // cos(35°)
+    constexpr float ERASE_SIN = 0.57358f;  // sin(35°)
     float eraseC = headC * ERASE_COS + headS * ERASE_SIN;
     float eraseS = headS * ERASE_COS - headC * ERASE_SIN;
-    float eraseNextC = eraseC + eraseS * DEG1;
-    float eraseNextS = eraseS - eraseC * DEG1;
+    // Erase a 3°-wide wedge to fully clear the trailing edge
+    float eraseNextC = eraseC + eraseS * DEG1 * 3;
+    float eraseNextS = eraseS - eraseC * DEG1 * 3;
     tft.fillTriangle(cx, cy,
         cx + (int)(eraseC * erase_r), cy - (int)(eraseS * erase_r),
         cx + (int)(eraseNextC * erase_r), cy - (int)(eraseNextS * erase_r),
@@ -317,7 +319,7 @@ void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
 
     for (int i = 0; i < TRAIL_SEGMENTS; i++) {
         RotateAngle(segC, segS, STEP);
-        uint16_t color = TRAIL_GRADIENT[TRAIL_SEGMENTS - 1 - i];
+        uint16_t color = TRAIL_GRADIENT[i];
         tft.fillTriangle(cx, cy,
             cx + (int)(segC * r),   cy - (int)(segS * r),
             cx + (int)(tailC * r),  cy - (int)(tailS * r),

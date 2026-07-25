@@ -345,10 +345,9 @@ void ConfigurationWebServer::Initialise() {
 // ESP8266: ESP8266WebServer (synchronous, stream-based)
 // ──────────────────────────────────────────────
 
-static String substitutePlaceholders(String templateStr, const String& key, const String& value)
+static inline void substitutePlaceholders(String& templateStr, const String& key, const String& value)
 {
     templateStr.replace(key, value);
-    return templateStr;
 }
 
 void ConfigurationWebServer::HandleRoot() {
@@ -383,20 +382,20 @@ void ConfigurationWebServer::HandleRoot() {
     html = String(CONFIG_HTML);
 #endif
 
-    html = substitutePlaceholders(html, "%LATITUDE%", latitude);
-    html = substitutePlaceholders(html, "%LONGITUDE%", longitude);
-    html = substitutePlaceholders(html, "%RADIUS%", radius);
-    html = substitutePlaceholders(html, "%OPENSKY_ID%", openskyClientId);
-    html = substitutePlaceholders(html, "%OPENSKY_SECRET%", openskySecret);
-    html = substitutePlaceholders(html, "%SCANLINE%", scanlineEnabled == "true" ? "checked" : "");
-    html = substitutePlaceholders(html, "%INFOTEXT%", infoTextEnabled == "true" ? "checked" : "");
-    html = substitutePlaceholders(html, "%TRIANGLE%", triangleEnabled == "true" ? "checked" : "");
-    html = substitutePlaceholders(html, "%DS_OPENSKY%", dataSource == "opensky" ? "selected" : "");
-    html = substitutePlaceholders(html, "%DS_LOCAL%", dataSource == "local" ? "selected" : "");
-    html = substitutePlaceholders(html, "%READSBHOST%", readsbHost);
-    html = substitutePlaceholders(html, "%READSBPORT%", readsbPort);
-    html = substitutePlaceholders(html, "%READSBPATH%", readsbPath);
-    html = substitutePlaceholders(html, "%FETCHINTERVAL%", fetchInterval);
+    substitutePlaceholders(html, "%LATITUDE%", latitude);
+    substitutePlaceholders(html, "%LONGITUDE%", longitude);
+    substitutePlaceholders(html, "%RADIUS%", radius);
+    substitutePlaceholders(html, "%OPENSKY_ID%", openskyClientId);
+    substitutePlaceholders(html, "%OPENSKY_SECRET%", openskySecret);
+    substitutePlaceholders(html, "%SCANLINE%", scanlineEnabled == "true" ? "checked" : "");
+    substitutePlaceholders(html, "%INFOTEXT%", infoTextEnabled == "true" ? "checked" : "");
+    substitutePlaceholders(html, "%TRIANGLE%", triangleEnabled == "true" ? "checked" : "");
+    substitutePlaceholders(html, "%DS_OPENSKY%", dataSource == "opensky" ? "selected" : "");
+    substitutePlaceholders(html, "%DS_LOCAL%", dataSource == "local" ? "selected" : "");
+    substitutePlaceholders(html, "%READSBHOST%", readsbHost);
+    substitutePlaceholders(html, "%READSBPORT%", readsbPort);
+    substitutePlaceholders(html, "%READSBPATH%", readsbPath);
+    substitutePlaceholders(html, "%FETCHINTERVAL%", fetchInterval);
 
     server.send(200, "text/html", html);
 }

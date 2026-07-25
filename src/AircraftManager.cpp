@@ -27,16 +27,14 @@ constexpr float    SCAN_SPEED      = (6.28318f / ROTATION_MS);  // 1 rev / 6s
 
 // ── Trail: 30° visual, 32° total with 2° black safety margin ──
 // 10 segments spanning 32° total wedge.
-// Outer 6 segments are black, inner 4 are green gradient.
+// Tail-side segments are black, head-side segments are green.
 constexpr int   TRAIL_SEGMENTS    = 10;
 constexpr float TRAIL_STEP_DEG    = (32.0f / TRAIL_SEGMENTS);
 // Precomputed cos(32°) and sin(32°) for tail calculation
 constexpr float TRAIL_TAIL_COS    = 0.8480481f;     // cos(32°)
 constexpr float TRAIL_TAIL_SIN    = 0.5299193f;     // sin(32°)
 
-// Phosphor green gradient: 16 steps from black to dark green (0x0520)
-// Outer 8 steps are pure black (0x0000) — they erase old trail residue.
-// Inner 8 steps fade from dim green to bright scan tip.
+// Phosphor green gradient for 10 segments: black tail → green head.
 constexpr uint16_t TRAIL_GRADIENT[] = {
     0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,  // Hard black tail erase (6)
     0x0100, 0x01C0, 0x0360, 0x0520                   // Fade to scan tip (4)
@@ -119,8 +117,8 @@ void AircraftManager::Initialise()
     displayTriangles = configServer.GetStoredString("triangle") == "true";
     displayScanLine = configServer.GetStoredString("scanline") != "false";
 
-    String si = configServer.GetStoredString("fetchinterval");
-    fetchInterval = si.length() > 0 ? si.toFloat() * 1000.0f : FETCH_DEFAULT;
+    // Force ADS-B fetch cadence to one update per full revolution.
+    fetchInterval = FETCH_DEFAULT;
 
     Serial.printf("[RADAR] lat=%.6f lon=%.6f rad=%.2f nm\n", lat, lon, rad);
     if (rad <= 0.001f) {
@@ -139,13 +137,13 @@ void AircraftManager::Update()
 {
     static uint32_t lastRotation = 0;
 
-    // ── Rotation boundary: fetch data + redraw all blips at full brightness ──
-    if (millis() - lastRotation >= ROTATION_MS) {
+    // ── Called once per rotation: fetch one ADS-B frame ──
+    if (millis() - lastRotation >= fetchInterval) {
         lastRotation = millis();
         RefreshAircraft();
     }
 
-    // ── Scan animation at ~30fps ──
+    // ── Scan animation (timed rotation, ~20fps target) ──
     static uint32_t lastScan = 0;
     if (millis() - lastScan >= SCAN_INTERVAL) {
         DrawRadarFrame();
@@ -161,7 +159,7 @@ void AircraftManager::Update()
     }
 }
 
-// ── Called once per rotation: fetch data, project, redraw all blips at full brightness ──
+// ── Called once per rotation: fetch data + update projected positions ──
 void AircraftManager::RefreshAircraft()
 {
     // Fetch fresh data
@@ -179,19 +177,20 @@ void AircraftManager::RefreshAircraft()
     }
     for (auto& icao : gone) lastPositions.erase(icao);
 
-    // Redraw all tracked aircraft at full brightness
+    // Update all tracked aircraft positions.
+    // PPI behavior: brightness is refreshed only when the sweep touches the blip.
     for (auto& [icao, ac] : trackedAircraft) {
         auto proj = ProjectCoordinateToScreen(ac.lat, ac.lon);
         int x = proj.first, y = proj.second;
         bool on = (x > 0 && x < 239 && y > 0 && y < 239);
 
         if (on) {
-            // Erase old position if it moved
+            // Erase old position if it moved and was visible
             if (lastPositions.count(icao) && lastPositions[icao].visible) {
                 ErasePosition(lastPositions[icao].x, lastPositions[icao].y, 14);
             }
-            DrawAircraftBlip(x, y, ac, 5);  // full brightness
-            lastPositions[icao] = {x, y, true, 5};
+            uint8_t b = lastPositions.count(icao) ? lastPositions[icao].brightness : 0;
+            lastPositions[icao] = {x, y, true, b};
         } else {
             if (lastPositions.count(icao) && lastPositions[icao].visible) {
                 ErasePosition(lastPositions[icao].x, lastPositions[icao].y, 14);
@@ -239,9 +238,16 @@ void AircraftManager::DrawRadarFrame()
     const int r = 119;             // Scan/trail to near panel edge
     const int erase_r = 121;       // slight overdraw to kill edge residue
 
-    // ── Advance scan angle CW on screen by 1° per frame ──
-    constexpr float DEG1 = 0.0174533f;
-    RotateAngle(scanState.c, scanState.s, -DEG1);
+    // ── Advance scan angle by elapsed time (exact 360° per ROTATION_MS) ──
+    constexpr float DEG1 = 0.0174533f; // visual beam width
+    static uint32_t lastStepMs = 0;
+    uint32_t nowMs = millis();
+    uint32_t dtMs = (lastStepMs == 0) ? SCAN_INTERVAL : (nowMs - lastStepMs);
+    lastStepMs = nowMs;
+    if (dtMs > 250) dtMs = SCAN_INTERVAL; // clamp long stalls/reconnects
+
+    float delta = SCAN_SPEED * (float)dtMs;
+    RotateAngle(scanState.c, scanState.s, -delta);
 
     // Renormalise every ~180 frames to prevent incremental drift
     static int normCount = 0;
@@ -295,7 +301,7 @@ void AircraftManager::DrawRadarFrame()
 
     // ── PPI behavior: when beam touches a blip, refresh to full brightness ──
     // Uses angular hit-test against current beam heading.
-    constexpr float BEAM_TOUCH_COS = 0.99905f; // cos(2.5°)
+    constexpr float BEAM_TOUCH_COS = 0.99756f; // cos(4°), tolerant at 20fps
     for (auto& [icao, lp] : lastPositions) {
         if (!lp.visible) continue;
         if (!trackedAircraft.count(icao)) continue;
@@ -350,7 +356,7 @@ void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
 
     for (int i = 0; i < TRAIL_SEGMENTS; i++) {
         RotateAngle(segC, segS, STEP);
-        uint16_t color = TRAIL_GRADIENT[TRAIL_SEGMENTS - 1 - i];
+        uint16_t color = TRAIL_GRADIENT[i];
         tft.fillTriangle(cx, cy,
             cx + (int)(segC * r),   cy - (int)(segS * r),
             cx + (int)(tailC * r),  cy - (int)(tailS * r),

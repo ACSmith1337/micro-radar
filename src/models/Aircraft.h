@@ -5,7 +5,7 @@
 #include <vector>
 #include <time.h>
 
-#include "JsonParser.h"
+#include "../JsonParser.h"
 
 // Maps to OpenSky /states/all response
 // Field indices match the documented state vector array order

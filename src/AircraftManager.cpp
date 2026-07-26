@@ -241,37 +241,48 @@ void AircraftManager::Update()
     if (!initialSyncComplete) {
         uint32_t now = millis();
 
-        if (!warmupComplete) {
-            // Simulated transmitter warm-up (common radar UX: standby/warmup before TX).
-            DrawRadarFrame();
-            tft.setTextColor(CLR_RING_BRIGHT, CLR_BG);
-            tft.drawCentreString("RADAR WARMUP", 120, 108, 1);
-            uint32_t remain = (now - warmupStartMs >= WARMUP_MS) ? 0 : (WARMUP_MS - (now - warmupStartMs));
-            uint32_t sec = (remain + 999) / 1000;
-            String line = String("STANDBY ") + String(sec) + String("s");
-            tft.drawCentreString(line.c_str(), 120, 120, 1);
-
-            if ((now - warmupStartMs) >= WARMUP_MS) {
-                warmupComplete = true;
+        // Flashing warmup indicator - no countdown since sync time is unknown
+        static uint32_t lastBlink = 0;
+        static bool blinkState = false;
+        
+        if ((now - lastBlink) >= 500) {  // Toggle every 500ms
+            blinkState = !blinkState;
+            lastBlink = now;
+            
+            // Draw or erase text without affecting grid
+            if (blinkState) {
+                tft.setTextColor(CLR_RING_BRIGHT, CLR_BG);
+                tft.setTextSize(2);  // Larger text
+                tft.drawCentreString("RADAR WARMUP", 120, 108, 1);
+            } else {
+                // Redraw entire grid to erase text and restore all elements
                 tft.fillScreen(CLR_BG);
                 DrawRadarGrid();
+                // Redraw bearing labels with slightly larger text
+                tft.setTextColor(CLR_RING_BRIGHT);
+                tft.setTextSize(1);  // Base size
+                // Draw bold by drawing twice with offset
+                tft.drawCentreString("N", 120, 4, 1);
+                tft.drawCentreString("N", 121, 4, 1);
+                tft.drawCentreString("S", 120, 230, 1);
+                tft.drawCentreString("S", 121, 230, 1);
+                tft.drawCentreString("E", 230, 116, 1);
+                tft.drawCentreString("E", 231, 116, 1);
+                tft.drawCentreString("W", 10, 116, 1);
+                tft.drawCentreString("W", 11, 116, 1);
             }
-            return;
         }
 
-        if (initialSyncLastAttempt == 0 || (now - initialSyncLastAttempt) >= 1500) {
+        // Attempt silent sync in background (no visual feedback)
+        if ((now - initialSyncLastAttempt) >= 1500) {
             initialSyncLastAttempt = now;
             if (RefreshAircraft()) {
                 initialSyncComplete = true;
                 lastRotation = now;
+                // Final grid redraw when starting sweep
                 tft.fillScreen(CLR_BG);
                 DrawRadarGrid();
                 Serial.println("[RADAR] Initial sync complete, starting sweep");
-            } else {
-                // Keep user-visible status while retrying.
-                tft.setTextColor(CLR_RING_BRIGHT, CLR_BG);
-                tft.drawCentreString("SYNC READSB...", 120, 108, 1);
-                tft.drawCentreString("WAITING FOR TARGETS", 120, 120, 1);
             }
         }
         return;
@@ -309,23 +320,7 @@ void AircraftManager::Update()
 // ── Called once per rotation: fetch data + update projected positions ──
 bool AircraftManager::RefreshAircraft()
 {
-    // Pre-fetch scrub: remove active beam head so sync stalls don't leave green wedges.
-    if (displayScanLine) {
-        const int cx = 120, cy = 120;
-        const int clear_r = 121;
-        constexpr float CLEAR_ANGLE = 0.0523599f; // 3°
-        float c0 = scanState.c;
-        float s0 = scanState.s;
-        float c1 = c0, s1 = s0;
-        RotateAngle(c1, s1, CLEAR_ANGLE);
-        tft.fillTriangle(cx, cy,
-            cx + (int)(c0 * clear_r), cy - (int)(s0 * clear_r),
-            cx + (int)(c1 * clear_r), cy - (int)(s1 * clear_r),
-            CLR_BG);
-        tft.fillCircle(cx + (int)(c0 * 119), cy - (int)(s0 * 119), 2, CLR_BG);
-    }
-
-    // Fetch fresh data
+    // Fetch fresh data (no visual scrub during warmup)
     StorePrev(trackedAircraft, prevPositions);
     bool fetchOk = FetchLocal();
     if (!fetchOk) {
@@ -442,12 +437,12 @@ void AircraftManager::DrawRadarFrame()
     float eraseWidth = delta + (DEG1 * 2.0f);
     if (eraseLag < (DEG1 * 2.0f)) eraseLag = DEG1 * 2.0f;
     if (eraseWidth < (DEG1 * 2.0f)) eraseWidth = DEG1 * 2.0f;
-    if (eraseLag > (DEG1 * 10.0f)) eraseLag = DEG1 * 10.0f;
-    if (eraseWidth > (DEG1 * 10.0f)) eraseWidth = DEG1 * 10.0f;
+    if (eraseLag > (DEG1 * 8.0f)) eraseLag = DEG1 * 8.0f;
+    if (eraseWidth > (DEG1 * 8.0f)) eraseWidth = DEG1 * 8.0f;
     if (stalled) {
         // Aggressive cleanup when a fetch stall occurred.
-        eraseLag = DEG1 * 6.0f;
-        eraseWidth = DEG1 * 8.0f;
+        eraseLag = DEG1 * 4.0f;
+        eraseWidth = DEG1 * 6.0f;
     }
 
     float eraseC = headC, eraseS = headS;
@@ -485,8 +480,8 @@ void AircraftManager::DrawRadarFrame()
     // Draw only in outer third (66%-100%) to keep center beam narrow.
     int bridgeSteps = (int)(delta / DEG1);
     if (bridgeSteps > 1) {
-        if (bridgeSteps > 6) bridgeSteps = 6;
-        const int bridgeInnerR = (r * 66) / 100;
+        if (bridgeSteps > 4) bridgeSteps = 4;
+        const int bridgeInnerR = (r * 70) / 100;
         float bridgeC = headC;
         float bridgeS = headS;
         for (int i = 1; i < bridgeSteps; i++) {
@@ -698,8 +693,12 @@ void AircraftManager::DrawRadarGrid() const
     tft.drawFastHLine(1, cy, 238, CLR_CROSSHAIR);
     tft.drawFastVLine(cx, 1, 238, CLR_CROSSHAIR);
 
-    // Tick marks every 30° (12 ticks)
+    // Tick marks every 30° (12 ticks) EXCEPT at cardinal directions (0°, 90°, 180°, 270°)
+    // Skip indices: 0, 3, 6, 9 (N, E, S, W)
     for (int i = 0; i < 12; i++) {
+        // Skip cardinal directions
+        if (i == 0 || i == 3 || i == 6 || i == 9) continue;
+        
         float dx = TICK_DIRS[i * 2], dy = TICK_DIRS[i * 2 + 1];
         tft.drawLine(cx + (int)(dx * 106), cy + (int)(dy * 106),
                      cx + (int)(dx * 114), cy + (int)(dy * 114), CLR_RING);

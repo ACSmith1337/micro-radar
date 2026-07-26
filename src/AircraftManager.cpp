@@ -23,7 +23,7 @@ constexpr uint32_t ROTATION_MS     = 6000;         // 1 full sweep = 6s
 constexpr uint32_t FETCH_DEFAULT   = ROTATION_MS;  // fetch at each rotation
 constexpr int      MAX_AIRCRAFT    = 24;           // draw/load protection
 constexpr int      MAX_RESP_BYTES  = 8192;         // heap protection
-constexpr float    SCAN_SPEED      = (6.28318f / ROTATION_MS);  // 1 rev / 6s
+constexpr float    SCAN_SPEED      = (6.2831853f / ROTATION_MS);  // exact 1 rev / 6s
 
 // ── Trail: 30° visual, 32° total with 2° black safety margin ──
 // 10 segments spanning 32° total wedge.
@@ -248,6 +248,8 @@ void AircraftManager::DrawRadarFrame()
     if (dtMs > 250) dtMs = SCAN_INTERVAL; // clamp long stalls/reconnects
 
     float delta = SCAN_SPEED * (float)dtMs;
+    float prevHeadC = scanState.c;
+    float prevHeadS = scanState.s;
     RotateAngle(scanState.c, scanState.s, -delta);
 
     // Renormalise every ~180 frames to prevent incremental drift
@@ -282,19 +284,19 @@ void AircraftManager::DrawRadarFrame()
         CLR_BG);
 
     // Bright scan line (1° wedge at leading edge)
-    float prevC = headC + headS * DEG1;
-    float prevS = headS - headC * DEG1;
+    float headNextC = headC + headS * DEG1;
+    float headNextS = headS - headC * DEG1;
     tft.fillTriangle(cx, cy,
         cx + (int)(headC * r), cy - (int)(headS * r),
-        cx + (int)(prevC * r), cy - (int)(prevS * r),
+        cx + (int)(headNextC * r), cy - (int)(headNextS * r),
         CLR_SCAN);
 
-    // Bridge large frame steps in outer annulus to remove visual skipping.
-    // Draws only in ~33%-100% radius so center remains narrow.
+    // Bridge large frame steps near edge to remove outer-ring skipping.
+    // Draw only in outer third (66%-100%) to keep center beam narrow.
     int bridgeSteps = (int)(delta / DEG1);
     if (bridgeSteps > 1) {
-        if (bridgeSteps > 4) bridgeSteps = 4;
-        const int bridgeInnerR = (r * 33) / 100;
+        if (bridgeSteps > 6) bridgeSteps = 6;
+        const int bridgeInnerR = (r * 66) / 100;
         float bridgeC = headC;
         float bridgeS = headS;
         for (int i = 1; i < bridgeSteps; i++) {
@@ -303,6 +305,10 @@ void AircraftManager::DrawRadarFrame()
                 cx + (int)(bridgeC * bridgeInnerR), cy - (int)(bridgeS * bridgeInnerR),
                 cx + (int)(bridgeC * r),            cy - (int)(bridgeS * r),
                 CLR_SCAN);
+            // Pin the beam tip at outer edge so endpoint does not strobe/skip.
+            tft.fillCircle(
+                cx + (int)(bridgeC * r), cy - (int)(bridgeS * r),
+                1, CLR_SCAN);
         }
     }
 
@@ -322,8 +328,11 @@ void AircraftManager::DrawRadarFrame()
     tft.drawCentreString("E", 4, cy - 3, 1);
 
     // ── PPI behavior: when beam touches a blip, refresh to full brightness ──
-    // Uses angular hit-test against current beam heading.
-    constexpr float BEAM_TOUCH_COS = 0.99756f; // cos(4°), tolerant at 20fps
+    // Use dynamic tolerance from actual frame step and test current+previous head.
+    float touchHalfAngle = delta + (DEG1 * 2.0f);
+    if (touchHalfAngle < (DEG1 * 4.0f)) touchHalfAngle = DEG1 * 4.0f;
+    if (touchHalfAngle > (DEG1 * 12.0f)) touchHalfAngle = DEG1 * 12.0f;
+    float beamTouchCos = cosf(touchHalfAngle);
     for (auto& [icao, lp] : lastPositions) {
         if (!lp.visible) continue;
         if (!trackedAircraft.count(icao)) continue;
@@ -336,9 +345,11 @@ void AircraftManager::DrawRadarFrame()
         float invD = 1.0f / sqrtf(d2);
         float ux = vx * invD;
         float uy = vy * invD;
-        float dot = ux * headC + uy * headS;
+        float dotNow  = ux * headC     + uy * headS;
+        float dotPrev = ux * prevHeadC + uy * prevHeadS;
+        float dot = (dotNow > dotPrev) ? dotNow : dotPrev;
 
-        if (dot >= BEAM_TOUCH_COS) {
+        if (dot >= beamTouchCos) {
             lp.brightness = 5;
             DrawAircraftBlip(lp.x, lp.y, trackedAircraft.at(icao), 5);
         }

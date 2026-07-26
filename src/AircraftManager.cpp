@@ -289,6 +289,23 @@ void AircraftManager::DrawRadarFrame()
         cx + (int)(prevC * r), cy - (int)(prevS * r),
         CLR_SCAN);
 
+    // Bridge large frame steps in outer annulus to remove visual skipping.
+    // Draws only in ~33%-100% radius so center remains narrow.
+    int bridgeSteps = (int)(delta / DEG1);
+    if (bridgeSteps > 1) {
+        if (bridgeSteps > 4) bridgeSteps = 4;
+        const int bridgeInnerR = (r * 33) / 100;
+        float bridgeC = headC;
+        float bridgeS = headS;
+        for (int i = 1; i < bridgeSteps; i++) {
+            RotateAngle(bridgeC, bridgeS, DEG1);
+            tft.drawLine(
+                cx + (int)(bridgeC * bridgeInnerR), cy - (int)(bridgeS * bridgeInnerR),
+                cx + (int)(bridgeC * r),            cy - (int)(bridgeS * r),
+                CLR_SCAN);
+        }
+    }
+
     // ── Restore static indicators overwritten by sweep (throttled) ──
     // Redrawing every frame can starve ESP8266; 10Hz is sufficient.
     static uint8_t gridDiv = 0;

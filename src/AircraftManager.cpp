@@ -25,6 +25,11 @@ constexpr int      MAX_AIRCRAFT    = 24;           // draw/load protection
 constexpr int      MAX_RESP_BYTES  = 8192;         // heap protection
 constexpr float    SCAN_SPEED      = (6.2831853f / ROTATION_MS);  // exact 1 rev / 6s
 
+// Ring geometry (outer is max range; inner rings are ~66% and ~33%).
+constexpr int      RING_OUTER_PX   = 110;
+constexpr int      RING_MID_PX     = (RING_OUTER_PX * 2) / 3;
+constexpr int      RING_INNER_PX   = (RING_OUTER_PX * 1) / 3;
+
 // ── Trail: 30° visual, 32° total with 2° black safety margin ──
 // 10 segments spanning 32° total wedge.
 // Tail-side segments are black, head-side segments are green.
@@ -124,7 +129,13 @@ void AircraftManager::Initialise()
     // ── Load config ──
     lat             = configServer.GetStoredString("latitude").toFloat();
     lon             = configServer.GetStoredString("longitude").toFloat();
-    rad             = configServer.GetStoredString("radius").toFloat();
+    String maxRangeNmStr = configServer.GetStoredString("maxrange");
+    if (!maxRangeNmStr.isEmpty()) {
+        rad = maxRangeNmStr.toFloat() / 60.0f;
+    } else {
+        // Backward compatibility with old config key (degrees).
+        rad = configServer.GetStoredString("radius").toFloat();
+    }
     displayInfoText = configServer.GetStoredString("infotext") == "true";
     displayTriangles = configServer.GetStoredString("triangle") == "true";
     displayScanLine = configServer.GetStoredString("scanline") != "false";
@@ -132,12 +143,13 @@ void AircraftManager::Initialise()
     // Force ADS-B fetch cadence to one update per full revolution.
     fetchInterval = FETCH_DEFAULT;
 
-    // Range ring labels (using true pixel radii ratios and 1° ≈ 60 NM)
-    ringLabelInner = FormatRangeNm(rad * (37.0f / 110.0f) * 60.0f);
-    ringLabelMid   = FormatRangeNm(rad * (74.0f / 110.0f) * 60.0f);
-    ringLabelOuter = FormatRangeNm(rad * 60.0f);
+    // Range ring labels in NM (outer=max range, mid≈66%, inner≈33%).
+    const float outerNm = rad * 60.0f;
+    ringLabelInner = FormatRangeNm(outerNm * ((float)RING_INNER_PX / (float)RING_OUTER_PX));
+    ringLabelMid   = FormatRangeNm(outerNm * ((float)RING_MID_PX   / (float)RING_OUTER_PX));
+    ringLabelOuter = FormatRangeNm(outerNm);
 
-    Serial.printf("[RADAR] lat=%.6f lon=%.6f rad=%.2f deg (%.1f NM outer)\n", lat, lon, rad, rad * 60.0f);
+    Serial.printf("[RADAR] lat=%.6f lon=%.6f rad=%.2f deg (%.1f NM outer)\n", lat, lon, rad, outerNm);
     if (rad <= 0.001f) {
         Serial.println("[RADAR] WARNING: radius not set — no aircraft will appear");
     }
@@ -354,9 +366,9 @@ void AircraftManager::DrawRadarFrame()
 
     // Range labels on each ring (north axis)
     tft.setTextColor(CLR_RING);
-    tft.drawString(ringLabelOuter, cx + 6, cy - 110 + 4, 1);
-    tft.drawString(ringLabelMid,   cx + 6, cy - 74  + 4, 1);
-    tft.drawString(ringLabelInner, cx + 6, cy - 37  + 4, 1);
+    tft.drawString(ringLabelOuter, cx + 6, cy - RING_OUTER_PX + 4, 1);
+    tft.drawString(ringLabelMid,   cx + 6, cy - RING_MID_PX   + 4, 1);
+    tft.drawString(ringLabelInner, cx + 6, cy - RING_INNER_PX + 4, 1);
 
     // ── PPI behavior: when beam touches a blip, refresh to full brightness ──
     // Use dynamic tolerance from actual frame step and test current+previous head.
@@ -450,9 +462,9 @@ void AircraftManager::DrawRadarGrid() const
     const int cx = 120, cy = 120;
 
     // Concentric range rings
-    tft.drawCircle(cx, cy, 110, CLR_RING);
-    tft.drawCircle(cx, cy, 74,  CLR_RING);
-    tft.drawCircle(cx, cy, 37,  CLR_RING);
+    tft.drawCircle(cx, cy, RING_OUTER_PX, CLR_RING);
+    tft.drawCircle(cx, cy, RING_MID_PX,   CLR_RING);
+    tft.drawCircle(cx, cy, RING_INNER_PX, CLR_RING);
 
     // Crosshairs
     tft.drawFastHLine(1, cy, 238, CLR_CROSSHAIR);
@@ -541,7 +553,7 @@ std::pair<int, int> AircraftManager::ProjectCoordinateToScreen(float lat2, float
     double east  = (lon2 - lon) * cos(lat * 0.0174533);
     double dist = sqrt(north * north + east * east);
 
-    float screenDist = (float)(dist / rad) * 110.0f;
+    float screenDist = (float)(dist / rad) * (float)RING_OUTER_PX;
     if (dist <= 1e-9) return {120, 120};
 
     // Screen mapping: +X east, -Y north.

@@ -45,15 +45,15 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                 </div>
 
                 <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-                    <span>Radius (outer ring, in &deg;):</span>
+                    <span>Max range (outer ring, NM):</span>
                     <input
-                        name="radius"
+                        name="maxrange"
                         type="text"
                         inputmode="decimal"
                         pattern="[0-9]+\.?[0-9]*"
-                        value='%RADIUS%'
+                        value='%MAXRANGE%'
                         class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
-                    <small id="ring-info" style="color:#666; margin-left:4px;">1&deg; &asymp; 60 NM</small>
+                    <small id="ring-info" style="color:#666; margin-left:4px;">Mid ring ≈ 66%, inner ring ≈ 33% of max range</small>
                 </label>
 
                 <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
@@ -178,7 +178,7 @@ static const char CONFIG_HTML[] PROGMEM = R"(
             });
 
             const ds = document.querySelector('select[name="datasource"]');
-            const radiusInput = document.querySelector('input[name="radius"]');
+            const maxRangeInput = document.querySelector('input[name="maxrange"]');
             const ringInfo = document.getElementById('ring-info');
             const localFields = document.getElementById('local-fields');
             const openskyFields = document.getElementById('opensky-fields');
@@ -190,22 +190,19 @@ static const char CONFIG_HTML[] PROGMEM = R"(
             }
 
             function updateRingInfo() {
-                const degOuter = parseFloat(radiusInput.value);
-                if (!isFinite(degOuter) || degOuter <= 0) {
-                    ringInfo.innerHTML = 'Outer ring = radius. Mid = 67.3%. Inner = 33.6%. 1&deg; &asymp; 60 NM';
+                const nmOuter = parseFloat(maxRangeInput.value);
+                if (!isFinite(nmOuter) || nmOuter <= 0) {
+                    ringInfo.innerHTML = 'Outer = max range. Mid ≈ 66%. Inner ≈ 33%';
                     return;
                 }
 
-                const degMid = degOuter * (74.0 / 110.0);
-                const degInner = degOuter * (37.0 / 110.0);
-                const nmOuter = degOuter * 60.0;
-                const nmMid = degMid * 60.0;
-                const nmInner = degInner * 60.0;
+                const nmMid = nmOuter * (2.0 / 3.0);
+                const nmInner = nmOuter * (1.0 / 3.0);
 
                 ringInfo.innerHTML =
-                    'Outer ' + degOuter.toFixed(2) + '&deg; (' + fmtNm(nmOuter) + ' NM)' +
-                    ' | Mid ' + degMid.toFixed(2) + '&deg; (' + fmtNm(nmMid) + ' NM)' +
-                    ' | Inner ' + degInner.toFixed(2) + '&deg; (' + fmtNm(nmInner) + ' NM)';
+                    'Outer ' + fmtNm(nmOuter) + ' NM' +
+                    ' | Mid ' + fmtNm(nmMid) + ' NM' +
+                    ' | Inner ' + fmtNm(nmInner) + ' NM';
             }
 
             function toggleSections() {
@@ -220,7 +217,7 @@ static const char CONFIG_HTML[] PROGMEM = R"(
 
             ds.addEventListener('change', toggleSections);
             toggleSections();
-            radiusInput.addEventListener('input', updateRingInfo);
+            maxRangeInput.addEventListener('input', updateRingInfo);
             updateRingInfo();
         </script>
     </body>
@@ -244,7 +241,11 @@ void ConfigurationWebServer::Initialise() {
         prefs.begin("config", true);
         const String latitude = prefs.getString("latitude", "");
         const String longitude = prefs.getString("longitude", "");
-        const String radius = prefs.getString("radius", "1.0");
+        const String radiusDeg = prefs.getString("radius", "1.0");
+        String maxRangeNm = prefs.getString("maxrange", "");
+        if (maxRangeNm.isEmpty()) {
+            maxRangeNm = String(radiusDeg.toFloat() * 60.0f, 1);
+        }
         const String openskyClientId = prefs.getString("opensky-id", "");
         String openskySecret = prefs.getString("opensky-secret", "");
         const String scanlineEnabled = prefs.getString("scanline", "true");
@@ -264,11 +265,11 @@ void ConfigurationWebServer::Initialise() {
         AsyncWebServerResponse* response = request->beginResponse(
             200, "text/html",
             (const uint8_t*)CONFIG_HTML, sizeof(CONFIG_HTML) - 1,
-            [latitude, longitude, radius, openskyClientId, openskySecret, scanlineEnabled, infoTextEnabled, triangleEnabled, dsOpenSky, dsLocal, readsbHost, readsbPort, fetchInterval]
+            [latitude, longitude, maxRangeNm, openskyClientId, openskySecret, scanlineEnabled, infoTextEnabled, triangleEnabled, dsOpenSky, dsLocal, readsbHost, readsbPort, fetchInterval]
             (const String& var) -> String {
                 if (var == "LATITUDE")       return latitude;
                 if (var == "LONGITUDE")      return longitude;
-                if (var == "RADIUS")         return radius;
+                if (var == "MAXRANGE")       return maxRangeNm;
                 if (var == "OPENSKY_ID")     return openskyClientId;
                 if (var == "OPENSKY_SECRET") return openskySecret;
                 if (var == "SCANLINE")       return scanlineEnabled == "true" ? "checked" : "";
@@ -301,13 +302,21 @@ void ConfigurationWebServer::Initialise() {
 
         TrySaveParam("latitude");
         TrySaveParam("longitude");
-        TrySaveParam("radius");
+        TrySaveParam("maxrange");
         TrySaveParam("datasource");
         TrySaveParam("opensky-id");
         TrySaveParam("readsbhost");
         TrySaveParam("readsbport");
         TrySaveParam("readsbpath");
         TrySaveParam("fetchinterval");
+
+        const auto* maxRangeParam = request->getParam("maxrange", true);
+        if (maxRangeParam != nullptr) {
+            float maxRangeNm = maxRangeParam->value().toFloat();
+            if (maxRangeNm > 0.0f) {
+                prefs.putString("radius", String(maxRangeNm / 60.0f, 4));
+            }
+        }
 
         const auto* param = request->getParam("opensky-secret", true);
         if (param != nullptr) {
@@ -346,7 +355,11 @@ void ConfigurationWebServer::HandleRoot() {
     prefs.begin("config", true);
     String latitude = prefs.getString("latitude", "");
     String longitude = prefs.getString("longitude", "");
-    String radius = prefs.getString("radius", "1.0");
+    String radiusDeg = prefs.getString("radius", "1.0");
+    String maxRangeNm = prefs.getString("maxrange", "");
+    if (maxRangeNm.isEmpty()) {
+        maxRangeNm = String(radiusDeg.toFloat() * 60.0f, 1);
+    }
     String openskyClientId = prefs.getString("opensky-id", "");
     String openskySecret = prefs.getString("opensky-secret", "");
     String scanlineEnabled = prefs.getString("scanline", "true");
@@ -374,7 +387,7 @@ void ConfigurationWebServer::HandleRoot() {
 
     substitutePlaceholders(html, "%LATITUDE%", latitude);
     substitutePlaceholders(html, "%LONGITUDE%", longitude);
-    substitutePlaceholders(html, "%RADIUS%", radius);
+    substitutePlaceholders(html, "%MAXRANGE%", maxRangeNm);
     substitutePlaceholders(html, "%OPENSKY_ID%", openskyClientId);
     substitutePlaceholders(html, "%OPENSKY_SECRET%", openskySecret);
     substitutePlaceholders(html, "%SCANLINE%", scanlineEnabled == "true" ? "checked" : "");
@@ -413,13 +426,20 @@ void ConfigurationWebServer::HandleSave() {
 
     TrySaveParam("latitude");
     TrySaveParam("longitude");
-    TrySaveParam("radius");
+    TrySaveParam("maxrange");
     TrySaveParam("datasource");
     TrySaveParam("opensky-id");
     TrySaveParam("readsbhost");
     TrySaveParam("readsbport");
     TrySaveParam("readsbpath");
     TrySaveParam("fetchinterval");
+
+    if (server.hasArg("maxrange")) {
+        float maxRangeNm = server.arg("maxrange").toFloat();
+        if (maxRangeNm > 0.0f) {
+            prefs.putString("radius", String(maxRangeNm / 60.0f, 4));
+        }
+    }
 
     if (server.hasArg("opensky-secret")) {
         const String& secret = server.arg("opensky-secret");

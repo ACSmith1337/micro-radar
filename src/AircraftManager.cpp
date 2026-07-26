@@ -18,7 +18,7 @@ constexpr uint16_t CLR_MILITARY    = 0xF800;       // Red
 constexpr uint16_t CLR_UNKNOWN     = 0x0520;       // Dark green
 
 // ─── Timing ───
-constexpr uint32_t SCAN_INTERVAL   = 50;           // ~20fps, lower CPU load on ESP8266
+constexpr uint32_t SCAN_INTERVAL   = 40;           // ~25fps for smoother sweep on ESP8266
 constexpr uint32_t ROTATION_MS     = 6000;         // 1 full sweep = 6s
 constexpr uint32_t FETCH_DEFAULT   = ROTATION_MS;  // fetch at each rotation
 constexpr int      MAX_AIRCRAFT    = 24;           // draw/load protection
@@ -144,11 +144,18 @@ void AircraftManager::Update()
         RefreshAircraft();
     }
 
-    // ── Scan animation (timed rotation, ~20fps target) ──
-    static uint32_t lastScan = 0;
-    if (millis() - lastScan >= SCAN_INTERVAL) {
+    // ── Scan animation (cadence-locked, ~25fps target) ──
+    // Use scheduled ticks instead of "set last=now" to reduce frame jitter.
+    static uint32_t nextScan = 0;
+    uint32_t now = millis();
+    if (nextScan == 0) nextScan = now;
+    if ((int32_t)(now - nextScan) >= 0) {
         DrawRadarFrame();
-        lastScan = millis();
+        nextScan += SCAN_INTERVAL;
+        // If we fell far behind (WiFi/fetch stall), resync cleanly.
+        if ((uint32_t)(now - nextScan) > (SCAN_INTERVAL * 4)) {
+            nextScan = now + SCAN_INTERVAL;
+        }
     }
 
     // ── PPI phosphor decay: dim blips once per second ──
@@ -315,9 +322,9 @@ void AircraftManager::DrawRadarFrame()
     }
 
     // ── Restore static indicators overwritten by sweep (throttled) ──
-    // Redrawing every frame can starve ESP8266; 10Hz is sufficient.
+    // Redrawing every frame can starve ESP8266; ~8Hz is sufficient.
     static uint8_t gridDiv = 0;
-    if ((++gridDiv & 0x01) == 0) {
+    if ((++gridDiv % 3) == 0) {
         DrawRadarGrid();
     }
 
@@ -357,9 +364,9 @@ void AircraftManager::DrawRadarFrame()
         }
     }
 
-    // ── Redraw aircraft blips at half-rate to reduce render load ──
+    // ── Redraw aircraft blips at reduced rate to lower scan jitter ──
     static uint8_t blipDiv = 0;
-    if ((++blipDiv & 0x01) == 0) {
+    if ((++blipDiv % 3) == 0) {
         for (const auto& [icao, lp] : lastPositions) {
             if (!lp.visible || lp.brightness == 0) continue;
             auto it = trackedAircraft.find(icao);

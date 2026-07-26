@@ -26,7 +26,7 @@ constexpr uint32_t DECAY_INTERVAL_MS = 375;        // 24 levels @ 375ms = ~9s fa
 constexpr int      MAX_AIRCRAFT    = 24;           // draw/load protection
 constexpr int      MAX_RESP_BYTES  = 8192;         // heap protection
 constexpr float    SCAN_SPEED      = (6.2831853f / ROTATION_MS);  // exact 1 rev / 10s
-constexpr uint8_t  AIRCRAFT_ERASE_RADIUS = 22;     // clears icon + heading vector fully
+constexpr uint8_t  AIRCRAFT_ERASE_RADIUS = 14;     // tighter erase to reduce background disturbance
 constexpr uint8_t  BRIGHTNESS_MAX  = 24;           // smoother phosphor persistence ceiling
 
 // Ring geometry (outer is max range; inner rings are ~66% and ~33%).
@@ -359,11 +359,10 @@ void AircraftManager::DecayAircraft()
             ErasePosition(lp.x, lp.y, 10);
             faded.push_back(icao);
         } else {
-            // Redraw at new lower brightness
+            // Redraw at lower brightness without hard background erase.
+            // This prevents visible dark patches/squares around fading targets.
             if (trackedAircraft.count(icao)) {
                 auto& ac = trackedAircraft.at(icao);
-                // Clear previous larger/brighter vector first so heading line truly fades.
-                ErasePosition(lp.x, lp.y, 22);
                 DrawAircraftBlip(lp.x, lp.y, ac, lp.brightness);
             }
         }
@@ -710,6 +709,15 @@ uint16_t AircraftManager::FadeColor(uint16_t base, uint8_t level) const
 void AircraftManager::ErasePosition(int x, int y, uint8_t radius) const
 {
     tft.fillCircle(x, y, radius, CLR_BG);
+
+    // Immediately restore static radar primitives under erased area
+    // to avoid visible black patches around aircraft.
+    const int cx = 120, cy = 120;
+    tft.drawCircle(cx, cy, RING_OUTER_PX, CLR_RING);
+    tft.drawCircle(cx, cy, RING_MID_PX,   CLR_RING);
+    tft.drawCircle(cx, cy, RING_INNER_PX, CLR_RING);
+    tft.drawFastHLine(1, cy, 238, CLR_CROSSHAIR);
+    tft.drawFastVLine(cx, 1, 238, CLR_CROSSHAIR);
 }
 
 // ── Draw aircraft blip with PPI brightness scaling ──
@@ -736,49 +744,47 @@ void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, u
     uint16_t color = FadeColor(baseColor, effective);
 
     float hRad = ac.heading * 0.0174533f;
-    float intensity = (float)effective / (float)BRIGHTNESS_MAX;
 
-    // Heading / motion vector (feature #6)
-    int headLen = 8 + (int)(11.0f * intensity * quality);
+    // Keep geometry stable across fade steps; only color/intensity changes.
+    // This prevents background patching artifacts during refresh/decay.
+    const int headLen = 10;
     int tx = x + (int)(sin(hRad) * headLen);
     int ty = y - (int)(cos(hRad) * headLen);
 
-    // Velocity vector: 15s look-ahead, quality-scaled
+    // Velocity vector: 15s look-ahead (fixed geometry, color scales with fade)
     float outerNm = rad * 60.0f;
     if (outerNm < 0.5f) outerNm = 0.5f;
-    float leadNm = ac.groundspeed * (15.0f / 3600.0f) * quality;
+    float leadNm = ac.groundspeed * (15.0f / 3600.0f);
     float leadPx = (leadNm / outerNm) * (float)RING_OUTER_PX;
-    if (leadPx > 22.0f) leadPx = 22.0f;
+    if (leadPx > 14.0f) leadPx = 14.0f;
     if (leadPx >= 2.0f) {
         int vx = x + (int)(sin(hRad) * leadPx);
         int vy = y - (int)(cos(hRad) * leadPx);
         tft.drawLine(x, y, vx, vy, FadeColor(baseColor, (uint8_t)(effective * 0.6f)));
     }
 
-    // Class glyphs (feature #5)
+    // Class glyphs (feature #5) — constant footprint for clean fading
     switch (glyph) {
         case TargetGlyph::HELICOPTER: {
-            int rr = 2 + (int)(1.5f * intensity);
+            const int rr = 3;
             tft.drawLine(x - rr, y, x + rr, y, color);
             tft.drawLine(x, y - rr, x, y + rr, color);
-            tft.fillCircle(x, y, 1 + (effective > (BRIGHTNESS_MAX / 2) ? 1 : 0), color);
+            tft.fillCircle(x, y, 1, color);
             break;
         }
         case TargetGlyph::HEAVY: {
-            int rr = 2 + (int)(2.0f * intensity);
+            const int rr = 4;
             tft.fillCircle(x, y, rr, color);
-            tft.drawCircle(x, y, rr + 2, FadeColor(baseColor, (uint8_t)(effective * 0.7f)));
+            tft.drawCircle(x, y, rr + 1, FadeColor(baseColor, (uint8_t)(effective * 0.7f)));
             break;
         }
         case TargetGlyph::FIXED_WING:
         default: {
             if (displayTriangles) {
-                int coreRadius = 2 + (int)(2.5f * intensity);
-                tft.fillCircle(x, y, coreRadius, color);
+                tft.fillCircle(x, y, 3, color);
                 tft.drawLine(x, y, tx, ty, color);
             } else {
-                int radius = 2 + (int)(4.0f * intensity);
-                tft.fillCircle(x, y, radius, color);
+                tft.fillCircle(x, y, 3, color);
             }
             break;
         }

@@ -77,6 +77,17 @@ static inline void Renormalise(float &c, float &s)
     s /= mag;
 }
 
+static String FormatRangeNm(float nm)
+{
+    if (nm < 10.0f) {
+        int tenths = (int)(nm * 10.0f + 0.5f);
+        int whole = tenths / 10;
+        int frac = tenths % 10;
+        return String(whole) + "." + String(frac) + "nm";
+    }
+    return String((int)(nm + 0.5f)) + "nm";
+}
+
 // ─── Store current positions for interpolation before new fetch ──
 static void StorePrev(const std::map<String, SimpleAircraft>& tracked,
                       std::map<String, InterpPosition>& prev)
@@ -120,6 +131,11 @@ void AircraftManager::Initialise()
 
     // Force ADS-B fetch cadence to one update per full revolution.
     fetchInterval = FETCH_DEFAULT;
+
+    // Range ring labels (using true pixel radii ratios)
+    ringLabelInner = FormatRangeNm(rad * (37.0f / 110.0f));
+    ringLabelMid   = FormatRangeNm(rad * (74.0f / 110.0f));
+    ringLabelOuter = FormatRangeNm(rad);
 
     Serial.printf("[RADAR] lat=%.6f lon=%.6f rad=%.2f nm\n", lat, lon, rad);
     if (rad <= 0.001f) {
@@ -335,6 +351,12 @@ void AircraftManager::DrawRadarFrame()
     tft.drawCentreString("S", cx, 228, 1);
     tft.drawCentreString("E", 236, cy - 3, 1);
     tft.drawCentreString("W", 4, cy - 3, 1);
+
+    // Range labels on each ring (north axis)
+    tft.setTextColor(CLR_RING);
+    tft.drawString(ringLabelOuter, cx + 6, cy - 110 + 4, 1);
+    tft.drawString(ringLabelMid,   cx + 6, cy - 74  + 4, 1);
+    tft.drawString(ringLabelInner, cx + 6, cy - 37  + 4, 1);
 
     // ── PPI behavior: when beam touches a blip, refresh to full brightness ──
     // Use dynamic tolerance from actual frame step and test current+previous head.

@@ -79,6 +79,10 @@ private:
     bool displayTriangles = false;
     bool displayScanLine = true;
 
+    String ringLabelInner;
+    String ringLabelMid;
+    String ringLabelOuter;
+
     uint32_t lastFetch = 0;
     uint32_t fetchInterval = 3000;
 

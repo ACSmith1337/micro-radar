@@ -55,6 +55,9 @@ An authentic PPI-style radar display for ADS-B data using an ESP8266 and GC9A01 
    arduino-cli upload -p /dev/ttyUSB0 --fqbn esp8266:esp8266:nodemcuv2 .
    ```
 
+## Round Mineral Glass Lens
+For an authentic radar appearance, we recommend using a Round Mineral Glass Lens over the display. This adds a professional look and feel similar to actual radar displays. You can purchase one from [AliExpress](https://www.aliexpress.com/item/1005002647300988.html).
+
 ## Configuration
 After flashing, the device will create a WiFi access point named "MicroRadar-Setup". Connect to this network and navigate to `192.168.4.1` to configure:
 

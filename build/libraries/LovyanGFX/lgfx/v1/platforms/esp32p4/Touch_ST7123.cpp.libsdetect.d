@@ -1,7 +1,7 @@
 Touch_ST7123.o: \
  /home/hermes/Arduino/libraries/LovyanGFX/src/lgfx/v1/platforms/esp32p4/Touch_ST7123.cpp \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/CommonHFile.h \
- /home/hermes/projects/adsb-radar/build/core/adsb-radar.ino.globals.h \
+ /home/hermes/micro-radar/build/core/micro-radar.ino.globals.h \
  /home/hermes/Arduino/libraries/LovyanGFX/src/lgfx/v1/platforms/esp32p4/Touch_ST7123.hpp \
  /home/hermes/Arduino/libraries/LovyanGFX/src/lgfx/v1/platforms/esp32p4/../../Touch.hpp \
  /home/hermes/Arduino/libraries/LovyanGFX/src/lgfx/v1/platforms/esp32p4/../../platforms/common.hpp \

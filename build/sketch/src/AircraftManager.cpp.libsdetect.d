@@ -1,8 +1,8 @@
 AircraftManager.o: \
- /home/hermes/projects/adsb-radar/build/sketch/src/AircraftManager.cpp \
+ /home/hermes/micro-radar/build/sketch/src/AircraftManager.cpp \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/CommonHFile.h \
- /home/hermes/projects/adsb-radar/build/core/adsb-radar.ino.globals.h \
- /home/hermes/projects/adsb-radar/build/sketch/src/AircraftManager.h \
+ /home/hermes/micro-radar/build/core/micro-radar.ino.globals.h \
+ /home/hermes/micro-radar/build/sketch/src/AircraftManager.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/Arduino.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/umm_malloc/umm_malloc_cfgport.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/stdlib_noniso.h \
@@ -51,7 +51,7 @@ AircraftManager.o: \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/debug.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/variants/nodemcu/pins_arduino.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/variants/nodemcu/../generic/common.h \
- /home/hermes/projects/adsb-radar/build/sketch/src/LGFX.h \
+ /home/hermes/micro-radar/build/sketch/src/LGFX.h \
  /home/hermes/Arduino/libraries/LovyanGFX/src/LovyanGFX.hpp \
  /home/hermes/Arduino/libraries/LovyanGFX/src/lgfx/v1_init.hpp \
  /home/hermes/Arduino/libraries/LovyanGFX/src/lgfx/v1/gitTagVersion.h \
@@ -136,7 +136,7 @@ AircraftManager.o: \
  /home/hermes/Arduino/libraries/LovyanGFX/src/lgfx/v1/touch/Touch_TT21xxx.hpp \
  /home/hermes/Arduino/libraries/LovyanGFX/src/lgfx/v1/touch/Touch_XPT2046.hpp \
  /home/hermes/Arduino/libraries/LovyanGFX/src/lgfx/v1/touch/Touch_RA8875.hpp \
- /home/hermes/projects/adsb-radar/build/sketch/src/HttpRequestManager.h \
+ /home/hermes/micro-radar/build/sketch/src/HttpRequestManager.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/ESP8266WiFi/src/WiFiClient.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/Client.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/Print.h \
@@ -171,7 +171,7 @@ AircraftManager.o: \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/tools/sdk/lwip2/include/lwip/debug.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/IPAddress.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/ESP8266WiFi/src/include/slist.h \
- /home/hermes/projects/adsb-radar/build/sketch/src/ConfigurationWebServer.h \
+ /home/hermes/micro-radar/build/sketch/src/ConfigurationWebServer.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/ESP8266WiFi/src/ESP8266WiFi.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/wl_definitions.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/tools/sdk/lwip2/include/lwip/tcpbase.h \
@@ -237,7 +237,7 @@ AircraftManager.o: \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/esp_priv.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/StreamString.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/ESP8266WebServer/src/Parsing-impl.h \
- /home/hermes/projects/adsb-radar/build/sketch/src/PreferencesCompat.h \
+ /home/hermes/micro-radar/build/sketch/src/PreferencesCompat.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/LittleFS/src/LittleFS.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/FSImpl.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/flash_hal.h \

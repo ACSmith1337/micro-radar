@@ -1,7 +1,7 @@
 DNSServer.o: \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/DNSServer/src/DNSServer.cpp \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/CommonHFile.h \
- /home/hermes/projects/adsb-radar/build/core/adsb-radar.ino.globals.h \
+ /home/hermes/micro-radar/build/core/micro-radar.ino.globals.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/ESP8266WiFi/src/ESP8266WiFi.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/wl_definitions.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/tools/sdk/lwip2/include/lwip/init.h \

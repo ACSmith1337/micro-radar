@@ -1,4 +1,4 @@
-#line 1 "/home/hermes/projects/adsb-radar/include/LGFX.h"
+#line 1 "/home/hermes/micro-radar/include/LGFX.h"
 #pragma once
 #include <LovyanGFX.hpp>
 

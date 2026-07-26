@@ -1,7 +1,7 @@
-/home/hermes/projects/adsb-radar/build/core/exc-c-wrapper-handler.S.o: \
+/home/hermes/micro-radar/build/core/exc-c-wrapper-handler.S.o: \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/exc-c-wrapper-handler.S \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/CommonHFile.h \
- /home/hermes/projects/adsb-radar/build/core/adsb-radar.ino.globals.h \
+ /home/hermes/micro-radar/build/core/micro-radar.ino.globals.h \
  /home/hermes/.arduino15/packages/esp8266/tools/xtensa-lx106-elf-gcc/3.1.0-gcc10.3-e5f9fec/include/xtensa/coreasm.h \
  /home/hermes/.arduino15/packages/esp8266/tools/xtensa-lx106-elf-gcc/3.1.0-gcc10.3-e5f9fec/include/xtensa/config/core.h \
  /home/hermes/.arduino15/packages/esp8266/tools/xtensa-lx106-elf-gcc/3.1.0-gcc10.3-e5f9fec/include/xtensa/hal.h \

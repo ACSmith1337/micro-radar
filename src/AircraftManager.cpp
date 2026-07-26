@@ -21,10 +21,10 @@ constexpr uint16_t CLR_GLOW_COMM   = 0x03E0;       // Commercial aircraft glow
 constexpr uint16_t CLR_GLOW_MIL    = 0xFC00;       // Military aircraft glow
 
 // ─── Timing ───
-constexpr uint32_t SCAN_INTERVAL   = 40;           // ~25fps for smoother sweep on ESP8266
+constexpr uint32_t SCAN_INTERVAL   = 30;           // ~33fps for smoother sweep on ESP8266 (increased from 40ms)
 constexpr uint32_t ROTATION_MS     = 10000;        // 1 full sweep = 10s
 constexpr uint32_t FETCH_DEFAULT   = ROTATION_MS;  // fetch at each rotation
-constexpr uint32_t DECAY_INTERVAL_MS = 300;        // 24 levels @ 300ms = ~7.2s fade, more responsive
+constexpr uint32_t DECAY_INTERVAL_MS = 250;        // 24 levels @ 250ms = ~6s fade, more responsive (decreased from 300ms)
 constexpr uint32_t WARMUP_MS       = 10000;        // startup warm-up screen before first sync
 constexpr int      MAX_AIRCRAFT    = 24;           // draw/load protection
 constexpr int      MAX_RESP_BYTES  = 8192;         // heap protection
@@ -277,15 +277,20 @@ void AircraftManager::Update()
         }
 
         // Attempt silent sync in background (no visual feedback)
-        if ((now - initialSyncLastAttempt) >= 1500) {
+        // Also allow timeout after 10 seconds to prevent getting stuck
+        if ((now - initialSyncLastAttempt) >= 1500 || (now - warmupStartMs) >= 10000) {
             initialSyncLastAttempt = now;
-            if (RefreshAircraft()) {
+            if (RefreshAircraft() || (now - warmupStartMs) >= 10000) {
                 initialSyncComplete = true;
                 lastRotation = now;
                 // Final grid redraw when starting sweep
                 tft.fillScreen(CLR_BG);
                 DrawRadarGrid();
-                Serial.println("[RADAR] Initial sync complete, starting sweep");
+                if ((now - warmupStartMs) >= 10000) {
+                    Serial.println("[RADAR] Warmup timeout, starting sweep without sync");
+                } else {
+                    Serial.println("[RADAR] Initial sync complete, starting sweep");
+                }
             }
         }
         return;
@@ -481,10 +486,10 @@ void AircraftManager::DrawRadarFrame()
 
     // Bridge large frame steps near edge to remove outer-ring skipping.
     // Draw only in outer third (66%-100%) to keep center beam narrow.
-    int bridgeSteps = (int)(delta / DEG1);
+    int bridgeSteps = (int)((delta / DEG1) * 1.5f); // Increase bridge steps for smoother outer ring
     if (bridgeSteps > 1) {
-        if (bridgeSteps > 4) bridgeSteps = 4;
-        const int bridgeInnerR = (r * 70) / 100;
+        if (bridgeSteps > 6) bridgeSteps = 6; // Increase max bridge steps
+        const int bridgeInnerR = (r * 60) / 100; // Start bridge earlier (60% instead of 70%)
         float bridgeC = headC;
         float bridgeS = headS;
         for (int i = 1; i < bridgeSteps; i++) {
@@ -514,8 +519,6 @@ void AircraftManager::DrawRadarFrame()
                 1, CLR_BG);
         }
     }
-
-    // ── Restore static indicators overwritten by sweep (throttled) ──
     // Redrawing every frame can starve ESP8266; ~8Hz is sufficient.
     static uint8_t gridDiv = 0;
     if ((++gridDiv % 3) == 0) {
@@ -636,49 +639,50 @@ void AircraftManager::DrawRadarFrame()
     }
 }
 
-// ── Draw phosphor trail: 32° behind scan line, 16 thin segments ──
+// ── Draw phosphor trail: 32° behind scan line, 10 thin segments ──
 void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
 {
-    // Trail starts 32° behind head
-    float tailC = headC * TRAIL_TAIL_COS + headS * TRAIL_TAIL_SIN;
-    float tailS = headS * TRAIL_TAIL_COS - headC * TRAIL_TAIL_SIN;
+    // Trail starts 32° behind head - but we want it in front for correct fade direction
+    // So we calculate the trail position in front of the head
+    float trailC = headC * TRAIL_TAIL_COS - headS * TRAIL_TAIL_SIN;
+    float trailS = headS * TRAIL_TAIL_COS + headC * TRAIL_TAIL_SIN;
 
     // ── Clear full wedge to black first ──
     tft.fillTriangle(cx, cy,
         cx + (int)(headC * r),   cy - (int)(headS * r),
-        cx + (int)(tailC * r),   cy - (int)(tailS * r),
+        cx + (int)(trailC * r),   cy - (int)(trailS * r),
         CLR_BG);
 
-    // Rotate each segment forward toward head
+    // Rotate each segment backward toward tail (opposite direction)
     constexpr float STEP = TRAIL_STEP_DEG * 0.0174533f;
-    float segC = tailC;
-    float segS = tailS;
-    const float tailStartC = tailC;
-    const float tailStartS = tailS;
+    float segC = headC;
+    float segS = headS;
+    const float headStartC = headC;
+    const float headStartS = headS;
 
     for (int i = 0; i < TRAIL_SEGMENTS; i++) {
-        RotateAngle(segC, segS, STEP);
-        uint16_t color = TRAIL_GRADIENT[i];
+        RotateAngle(segC, segS, -STEP); // Negative step to go backward
+        uint16_t color = TRAIL_GRADIENT[TRAIL_SEGMENTS - 1 - i]; // Reverse gradient order
         tft.fillTriangle(cx, cy,
             cx + (int)(segC * r),   cy - (int)(segS * r),
-            cx + (int)(tailC * r),  cy - (int)(tailS * r),
+            cx + (int)(headC * r),  cy - (int)(headS * r),
             color);
-        tailC = segC;
-        tailS = segS;
+        headC = segC;
+        headS = segS;
     }
 
     // Hard-black guard wedge over oldest trail region (kills tail-end green flash)
-    float guardC = tailStartC;
-    float guardS = tailStartS;
+    float guardC = headStartC;
+    float guardS = headStartS;
     constexpr float TAIL_GUARD_STEP = 0.0174533f * 10.0f; // 10°
-    RotateAngle(guardC, guardS, TAIL_GUARD_STEP);
+    RotateAngle(guardC, guardS, -TAIL_GUARD_STEP); // Negative step
     tft.fillTriangle(cx, cy,
-        cx + (int)(tailStartC * (r + 2)), cy - (int)(tailStartS * (r + 2)),
+        cx + (int)(headStartC * (r + 2)), cy - (int)(headStartS * (r + 2)),
         cx + (int)(guardC * (r + 2)),     cy - (int)(guardS * (r + 2)),
         CLR_BG);
 
     // Force tail tip to black to prevent edge flash on low-res triangle joins
-    tft.fillCircle(cx + (int)(tailStartC * r), cy - (int)(tailStartS * r), 5, CLR_BG);
+    tft.fillCircle(cx + (int)(headStartC * r), cy - (int)(headStartS * r), 5, CLR_BG);
 }
 
 // ── Static grid: rings, ticks, crosshairs ──

@@ -1,9 +1,9 @@
-/home/hermes/projects/adsb-radar/build/sketch/src/OpenSkyAuthTokenHandler.cpp.o: \
- /home/hermes/projects/adsb-radar/build/sketch/src/OpenSkyAuthTokenHandler.cpp \
+/home/hermes/micro-radar/build/sketch/src/OpenSkyAuthTokenHandler.cpp.o: \
+ /home/hermes/micro-radar/build/sketch/src/OpenSkyAuthTokenHandler.cpp \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/CommonHFile.h \
- /home/hermes/projects/adsb-radar/build/core/adsb-radar.ino.globals.h \
- /home/hermes/projects/adsb-radar/build/sketch/src/OpenSkyAuthTokenHandler.h \
- /home/hermes/projects/adsb-radar/build/sketch/src/HttpRequestManager.h \
+ /home/hermes/micro-radar/build/core/micro-radar.ino.globals.h \
+ /home/hermes/micro-radar/build/sketch/src/OpenSkyAuthTokenHandler.h \
+ /home/hermes/micro-radar/build/sketch/src/HttpRequestManager.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/ESP8266WiFi/src/WiFiClient.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/Arduino.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/umm_malloc/umm_malloc_cfgport.h \

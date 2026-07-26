@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2] - 2026-07-26
+
+### Fixed
+- Resolved issue where radar would get stuck on warmup screen by implementing a 10-second timeout
+- Fixed beam fade direction to properly follow the scan line
+- Improved performance and responsiveness by optimizing scan interval and decay timing
+- Enhanced outer ring smoothness with improved bridge steps calculation
+
 ## [1.1] - 2026-07-26
 
 ### Added

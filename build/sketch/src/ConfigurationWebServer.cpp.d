@@ -1,8 +1,8 @@
-/home/hermes/projects/adsb-radar/build/sketch/src/ConfigurationWebServer.cpp.o: \
- /home/hermes/projects/adsb-radar/build/sketch/src/ConfigurationWebServer.cpp \
+/home/hermes/micro-radar/build/sketch/src/ConfigurationWebServer.cpp.o: \
+ /home/hermes/micro-radar/build/sketch/src/ConfigurationWebServer.cpp \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/CommonHFile.h \
- /home/hermes/projects/adsb-radar/build/core/adsb-radar.ino.globals.h \
- /home/hermes/projects/adsb-radar/build/sketch/src/ConfigurationWebServer.h \
+ /home/hermes/micro-radar/build/core/micro-radar.ino.globals.h \
+ /home/hermes/micro-radar/build/sketch/src/ConfigurationWebServer.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/ESP8266WiFi/src/ESP8266WiFi.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/wl_definitions.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/tools/sdk/lwip2/include/lwip/init.h \
@@ -150,7 +150,7 @@
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/esp_priv.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/StreamString.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/ESP8266WebServer/src/Parsing-impl.h \
- /home/hermes/projects/adsb-radar/build/sketch/src/PreferencesCompat.h \
+ /home/hermes/micro-radar/build/sketch/src/PreferencesCompat.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/LittleFS/src/LittleFS.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/FSImpl.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/flash_hal.h \

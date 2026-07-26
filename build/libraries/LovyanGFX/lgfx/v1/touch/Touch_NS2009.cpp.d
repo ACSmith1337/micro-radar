@@ -1,7 +1,7 @@
-/home/hermes/projects/adsb-radar/build/libraries/LovyanGFX/lgfx/v1/touch/Touch_NS2009.cpp.o: \
+/home/hermes/micro-radar/build/libraries/LovyanGFX/lgfx/v1/touch/Touch_NS2009.cpp.o: \
  /home/hermes/Arduino/libraries/LovyanGFX/src/lgfx/v1/touch/Touch_NS2009.cpp \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/CommonHFile.h \
- /home/hermes/projects/adsb-radar/build/core/adsb-radar.ino.globals.h \
+ /home/hermes/micro-radar/build/core/micro-radar.ino.globals.h \
  /home/hermes/Arduino/libraries/LovyanGFX/src/lgfx/v1/touch/Touch_NS2009.hpp \
  /home/hermes/Arduino/libraries/LovyanGFX/src/lgfx/v1/touch/../Touch.hpp \
  /home/hermes/Arduino/libraries/LovyanGFX/src/lgfx/v1/touch/../platforms/common.hpp \

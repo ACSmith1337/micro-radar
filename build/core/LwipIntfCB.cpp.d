@@ -1,7 +1,7 @@
-/home/hermes/projects/adsb-radar/build/core/LwipIntfCB.cpp.o: \
+/home/hermes/micro-radar/build/core/LwipIntfCB.cpp.o: \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/LwipIntfCB.cpp \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/CommonHFile.h \
- /home/hermes/projects/adsb-radar/build/core/adsb-radar.ino.globals.h \
+ /home/hermes/micro-radar/build/core/micro-radar.ino.globals.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/LwipIntf.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/tools/sdk/lwip2/include/lwip/netif.h \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/tools/sdk/lwip2/include/lwip/opt.h \

@@ -1,4 +1,4 @@
-#line 1 "/home/hermes/projects/adsb-radar/src/WiFiManagerHelpers.h"
+#line 1 "/home/hermes/micro-radar/src/WiFiManagerHelpers.h"
 #pragma once
 
 #include <WiFiManager.h>

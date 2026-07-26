@@ -1,10 +1,23 @@
-#line 1 "/home/hermes/projects/adsb-radar/CHANGELOG.md"
+#line 1 "/home/hermes/micro-radar/CHANGELOG.md"
 # Changelog
 
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.1] - 2026-07-26
+
+### Added
+- Enhanced realistic PPI effects with improved phosphor glow
+- More pronounced aircraft glow effects for better visibility
+- Enhanced phosphor trail gradient for authentic bloom effect
+- Differentiated commercial aircraft color from scan line
+
+### Changed
+- Optimized brightness decay timing for more responsive fade
+- Improved color palette for better visual distinction
+- Enhanced scan line brightness for better visibility
 
 ## [1.0] - 2026-07-26
 

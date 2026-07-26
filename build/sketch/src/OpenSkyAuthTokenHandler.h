@@ -1,4 +1,4 @@
-#line 1 "/home/hermes/projects/adsb-radar/src/OpenSkyAuthTokenHandler.h"
+#line 1 "/home/hermes/micro-radar/src/OpenSkyAuthTokenHandler.h"
 #pragma once
 
 #include "HttpRequestManager.h"

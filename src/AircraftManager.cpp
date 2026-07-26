@@ -23,6 +23,7 @@ constexpr uint32_t SCAN_INTERVAL   = 40;           // ~25fps for smoother sweep 
 constexpr uint32_t ROTATION_MS     = 10000;        // 1 full sweep = 10s
 constexpr uint32_t FETCH_DEFAULT   = ROTATION_MS;  // fetch at each rotation
 constexpr uint32_t DECAY_INTERVAL_MS = 375;        // 24 levels @ 375ms = ~9s fade, smoother
+constexpr uint32_t WARMUP_MS       = 7000;         // startup warm-up screen before first sync
 constexpr int      MAX_AIRCRAFT    = 24;           // draw/load protection
 constexpr int      MAX_RESP_BYTES  = 8192;         // heap protection
 constexpr float    SCAN_SPEED      = (6.2831853f / ROTATION_MS);  // exact 1 rev / 10s
@@ -221,6 +222,8 @@ void AircraftManager::Initialise()
     scanState = {0.0f, 1.0f, 0.0f};
     initialSyncComplete = false;
     initialSyncLastAttempt = 0;
+    warmupStartMs = millis();
+    warmupComplete = false;
 
     // ── Clear screen + draw grid + startup status ──
     tft.fillScreen(CLR_BG);
@@ -234,9 +237,28 @@ void AircraftManager::Update()
 {
     static uint32_t lastRotation = 0;
 
-    // ── Startup gate: fetch one valid readsb frame before sweep starts ──
+    // ── Startup sequence: warm-up display, then gate on first valid readsb sync ──
     if (!initialSyncComplete) {
         uint32_t now = millis();
+
+        if (!warmupComplete) {
+            // Simulated transmitter warm-up (common radar UX: standby/warmup before TX).
+            DrawRadarFrame();
+            tft.setTextColor(CLR_RING_BRIGHT, CLR_BG);
+            tft.drawCentreString("RADAR WARMUP", 120, 108, 1);
+            uint32_t remain = (now - warmupStartMs >= WARMUP_MS) ? 0 : (WARMUP_MS - (now - warmupStartMs));
+            uint32_t sec = (remain + 999) / 1000;
+            String line = String("STANDBY ") + String(sec) + String("s");
+            tft.drawCentreString(line.c_str(), 120, 120, 1);
+
+            if ((now - warmupStartMs) >= WARMUP_MS) {
+                warmupComplete = true;
+                tft.fillScreen(CLR_BG);
+                DrawRadarGrid();
+            }
+            return;
+        }
+
         if (initialSyncLastAttempt == 0 || (now - initialSyncLastAttempt) >= 1500) {
             initialSyncLastAttempt = now;
             if (RefreshAircraft()) {
@@ -248,7 +270,8 @@ void AircraftManager::Update()
             } else {
                 // Keep user-visible status while retrying.
                 tft.setTextColor(CLR_RING_BRIGHT, CLR_BG);
-                tft.drawCentreString("SYNC READSB...", 120, 112, 1);
+                tft.drawCentreString("SYNC READSB...", 120, 108, 1);
+                tft.drawCentreString("WAITING FOR TARGETS", 120, 120, 1);
             }
         }
         return;

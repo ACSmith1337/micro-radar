@@ -91,6 +91,8 @@ private:
     uint32_t fetchInterval = 3000;
     bool initialSyncComplete = false;
     uint32_t initialSyncLastAttempt = 0;
+    uint32_t warmupStartMs = 0;
+    bool warmupComplete = false;
 
     std::map<String, SimpleAircraft> trackedAircraft;
     std::map<String, InterpPosition> prevPositions;

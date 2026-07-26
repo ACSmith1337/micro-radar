@@ -36,8 +36,9 @@ constexpr float TRAIL_TAIL_SIN    = 0.5299193f;     // sin(32°)
 
 // Phosphor green gradient for 10 segments: black tail → green head.
 constexpr uint16_t TRAIL_GRADIENT[] = {
-    0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,  // Hard black tail erase (6)
-    0x0100, 0x01C0, 0x0360, 0x0520                   // Fade to scan tip (4)
+    0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+    0x0000, 0x0000,                                   // Hard black tail erase (7)
+    0x00C0, 0x01C0, 0x0320                            // Subtle green near head (3)
 };  // 10 entries = TRAIL_SEGMENTS
 
 // ── Precomputed tick directions (30° increments) ──
@@ -273,9 +274,9 @@ void AircraftManager::DrawRadarFrame()
     constexpr float ERASE_SIN = 0.64279f;  // sin(40°)
     float eraseC = headC * ERASE_COS + headS * ERASE_SIN;
     float eraseS = headS * ERASE_COS - headC * ERASE_SIN;
-    // Erase a 6°-wide wedge to fully clear trailing-edge residue
-    float eraseNextC = eraseC + eraseS * DEG1 * 6;
-    float eraseNextS = eraseS - eraseC * DEG1 * 6;
+    // Erase an 8°-wide wedge to fully clear trailing-edge residue
+    float eraseNextC = eraseC + eraseS * DEG1 * 8;
+    float eraseNextS = eraseS - eraseC * DEG1 * 8;
     tft.fillTriangle(cx, cy,
         cx + (int)(eraseC * erase_r), cy - (int)(eraseS * erase_r),
         cx + (int)(eraseNextC * erase_r), cy - (int)(eraseNextS * erase_r),
@@ -365,8 +366,18 @@ void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
         tailS = segS;
     }
 
+    // Hard-black guard wedge over oldest trail region (kills tail-end green flash)
+    float guardC = tailStartC;
+    float guardS = tailStartS;
+    constexpr float TAIL_GUARD_STEP = 0.0174533f * 10.0f; // 10°
+    RotateAngle(guardC, guardS, TAIL_GUARD_STEP);
+    tft.fillTriangle(cx, cy,
+        cx + (int)(tailStartC * (r + 2)), cy - (int)(tailStartS * (r + 2)),
+        cx + (int)(guardC * (r + 2)),     cy - (int)(guardS * (r + 2)),
+        CLR_BG);
+
     // Force tail tip to black to prevent edge flash on low-res triangle joins
-    tft.fillCircle(cx + (int)(tailStartC * r), cy - (int)(tailStartS * r), 4, CLR_BG);
+    tft.fillCircle(cx + (int)(tailStartC * r), cy - (int)(tailStartS * r), 5, CLR_BG);
 }
 
 // ── Static grid: rings, ticks, crosshairs ──

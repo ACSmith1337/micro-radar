@@ -132,12 +132,12 @@ void AircraftManager::Initialise()
     // Force ADS-B fetch cadence to one update per full revolution.
     fetchInterval = FETCH_DEFAULT;
 
-    // Range ring labels (using true pixel radii ratios)
-    ringLabelInner = FormatRangeNm(rad * (37.0f / 110.0f));
-    ringLabelMid   = FormatRangeNm(rad * (74.0f / 110.0f));
-    ringLabelOuter = FormatRangeNm(rad);
+    // Range ring labels (using true pixel radii ratios and 1° ≈ 60 NM)
+    ringLabelInner = FormatRangeNm(rad * (37.0f / 110.0f) * 60.0f);
+    ringLabelMid   = FormatRangeNm(rad * (74.0f / 110.0f) * 60.0f);
+    ringLabelOuter = FormatRangeNm(rad * 60.0f);
 
-    Serial.printf("[RADAR] lat=%.6f lon=%.6f rad=%.2f nm\n", lat, lon, rad);
+    Serial.printf("[RADAR] lat=%.6f lon=%.6f rad=%.2f deg (%.1f NM outer)\n", lat, lon, rad, rad * 60.0f);
     if (rad <= 0.001f) {
         Serial.println("[RADAR] WARNING: radius not set — no aircraft will appear");
     }

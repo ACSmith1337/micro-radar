@@ -34,10 +34,11 @@ constexpr float TRAIL_STEP_DEG    = (32.0f / TRAIL_SEGMENTS);
 constexpr float TRAIL_TAIL_COS    = 0.8480481f;     // cos(32°)
 constexpr float TRAIL_TAIL_SIN    = 0.5299193f;     // sin(32°)
 
-// Tail renderer in black-only mode to prevent any tail-end green artifacts.
+// Phosphor green gradient for 10 segments: black tail → green head.
 constexpr uint16_t TRAIL_GRADIENT[] = {
     0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
-    0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+    0x0000, 0x0000,                                   // Hard black tail erase (7)
+    0x00C0, 0x01C0, 0x0320                            // Subtle green near head (3)
 };  // 10 entries = TRAIL_SEGMENTS
 
 // ── Precomputed tick directions (30° increments) ──

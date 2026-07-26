@@ -24,6 +24,7 @@ constexpr uint32_t FETCH_DEFAULT   = ROTATION_MS;  // fetch at each rotation
 constexpr int      MAX_AIRCRAFT    = 24;           // draw/load protection
 constexpr int      MAX_RESP_BYTES  = 8192;         // heap protection
 constexpr float    SCAN_SPEED      = (6.2831853f / ROTATION_MS);  // exact 1 rev / 6s
+constexpr uint8_t  AIRCRAFT_ERASE_RADIUS = 22;     // clears icon + heading vector fully
 
 // Ring geometry (outer is max range; inner rings are ~66% and ~33%).
 constexpr int      RING_OUTER_PX   = 110;
@@ -207,7 +208,7 @@ void AircraftManager::RefreshAircraft()
     std::vector<String> gone;
     for (auto& [icao, lp] : lastPositions) {
         if (!trackedAircraft.count(icao)) {
-            if (lp.visible) ErasePosition(lp.x, lp.y, 14);
+            if (lp.visible) ErasePosition(lp.x, lp.y, AIRCRAFT_ERASE_RADIUS);
             gone.push_back(icao);
         }
     }
@@ -223,13 +224,13 @@ void AircraftManager::RefreshAircraft()
         if (on) {
             // Erase old position if it moved and was visible
             if (lastPositions.count(icao) && lastPositions[icao].visible) {
-                ErasePosition(lastPositions[icao].x, lastPositions[icao].y, 14);
+                ErasePosition(lastPositions[icao].x, lastPositions[icao].y, AIRCRAFT_ERASE_RADIUS);
             }
             uint8_t b = lastPositions.count(icao) ? lastPositions[icao].brightness : 0;
             lastPositions[icao] = {x, y, true, b};
         } else {
             if (lastPositions.count(icao) && lastPositions[icao].visible) {
-                ErasePosition(lastPositions[icao].x, lastPositions[icao].y, 14);
+                ErasePosition(lastPositions[icao].x, lastPositions[icao].y, AIRCRAFT_ERASE_RADIUS);
             }
             lastPositions[icao] = {x, y, false, 0};
         }

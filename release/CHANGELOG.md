@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Authentic PPI radar display with phosphor glow effects
 - Smooth aircraft interpolation between data updates
-- Color-coded aircraft (blue for commercial, red for military)
+- Color-coded aircraft (green for commercial, red for military)
 - Web-based configuration interface
 - Support for readsb/dump1090 aircraft.json feeds
 - Hardware assembly instructions

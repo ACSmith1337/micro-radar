@@ -218,6 +218,8 @@ void AircraftManager::DecayAircraft()
             // Redraw at new lower brightness
             if (trackedAircraft.count(icao)) {
                 auto& ac = trackedAircraft.at(icao);
+                // Clear previous larger/brighter vector first so heading line truly fades.
+                ErasePosition(lp.x, lp.y, 22);
                 DrawAircraftBlip(lp.x, lp.y, ac, lp.brightness);
             }
         }
@@ -324,8 +326,8 @@ void AircraftManager::DrawRadarFrame()
     tft.setTextSize(1);
     tft.drawCentreString("N", cx, 2, 1);
     tft.drawCentreString("S", cx, 228, 1);
-    tft.drawCentreString("W", 236, cy - 3, 1);
-    tft.drawCentreString("E", 4, cy - 3, 1);
+    tft.drawCentreString("E", 236, cy - 3, 1);
+    tft.drawCentreString("W", 4, cy - 3, 1);
 
     // ── PPI behavior: when beam touches a blip, refresh to full brightness ──
     // Use dynamic tolerance from actual frame step and test current+previous head.
@@ -482,13 +484,15 @@ void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, u
 
     if (displayTriangles) {
         // Larger symbol + longer heading indicator
+        // ADS-B track is degrees clockwise from North.
+        // Screen vector: x=sin(track), y=-cos(track)
         float hRad = ac.heading * 0.0174533f;
         float scale = 0.45f + (brightness * 0.13f);  // 0.58 to 1.10
         int len = (int)(18.0f * scale);              // 10px to 19px
         int coreRadius = 2 + (brightness >= 4 ? 2 : (brightness >= 2 ? 1 : 0));
         tft.fillCircle(x, y, coreRadius, color);
-        int tx = x + (int)(cos(hRad) * len);
-        int ty = y - (int)(sin(hRad) * len);
+        int tx = x + (int)(sin(hRad) * len);
+        int ty = y - (int)(cos(hRad) * len);
         tft.drawLine(x, y, tx, ty, color);
         // No tip dot: keep a single aircraft core marker + heading vector.
     } else {
@@ -502,15 +506,18 @@ std::pair<int, int> AircraftManager::ProjectCoordinateToScreen(float lat2, float
 {
     if (rad <= 0.001f) return {999, 999};
 
-    double dx = lat2 - lat;
-    double dy = (lon2 - lon) * cos(lat * 0.0174533);
-    double dist = sqrt(dx * dx + dy * dy);
+    // Local tangent approximation (North/East axes)
+    // North from latitude delta, East from longitude delta * cos(latitude).
+    double north = lat2 - lat;
+    double east  = (lon2 - lon) * cos(lat * 0.0174533);
+    double dist = sqrt(north * north + east * east);
 
     float screenDist = (float)(dist / rad) * 110.0f;
-    double bearing = atan2(dy, dx);
+    if (dist <= 1e-9) return {120, 120};
 
-    int sx = 120 + (int)(screenDist * cos(bearing));
-    int sy = 120 - (int)(screenDist * sin(bearing));
+    // Screen mapping: +X east, -Y north.
+    int sx = 120 + (int)(screenDist * (east / dist));
+    int sy = 120 - (int)(screenDist * (north / dist));
     return {sx, sy};
 }
 

@@ -23,6 +23,10 @@ struct SimpleAircraft {
     float lon = 0.0f;
     float altitude = 0.0f;
     float heading = 0.0f;
+    float groundspeed = 0.0f;  // knots
+    float seen = 0.0f;         // seconds since last message at fetch time
+    float seenPos = 0.0f;      // seconds since last position update at fetch time
+    String category = "";     // readsb category (e.g. A1..A7)
     String squawk = "";
 };
 

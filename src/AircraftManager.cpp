@@ -111,6 +111,13 @@ static void StorePrev(const std::map<String, SimpleAircraft>& tracked,
 
 // ════════════════════════════════════════════════════════════
 
+enum class TargetGlyph {
+    FIXED_WING,
+    HELICOPTER,
+    HEAVY,
+    UNKNOWN
+};
+
 // ─── Aircraft type detection ───
 // Military squawks: 4000–4999, 7000+, emergencies
 static AircraftType GetAircraftType(const SimpleAircraft& ac)
@@ -124,6 +131,58 @@ static AircraftType GetAircraftType(const SimpleAircraft& ac)
         return AircraftType::MILITARY;
     }
     return AircraftType::COMMERCIAL;
+}
+
+static TargetGlyph GetTargetGlyph(const SimpleAircraft& ac)
+{
+    if (ac.category == "A7") return TargetGlyph::HELICOPTER;
+    if (ac.category == "A5" || ac.category == "A6") return TargetGlyph::HEAVY;
+    if (ac.groundspeed > 1.0f) return TargetGlyph::FIXED_WING;
+    return TargetGlyph::UNKNOWN;
+}
+
+static float ComputeDataAgeSec(const SimpleAircraft& ac, uint32_t msSinceFetch)
+{
+    float ageAtFetch = ac.seen;
+    if (ac.seenPos > ageAtFetch) ageAtFetch = ac.seenPos;
+    return ageAtFetch + ((float)msSinceFetch / 1000.0f);
+}
+
+static float ComputeQuality01(float ageSec)
+{
+    // Fresh <=2s. Fade confidence toward zero by ~28s.
+    if (ageSec <= 2.0f) return 1.0f;
+    if (ageSec >= 28.0f) return 0.0f;
+    float q = 1.0f - ((ageSec - 2.0f) / 26.0f);
+    if (q < 0.0f) q = 0.0f;
+    if (q > 1.0f) q = 1.0f;
+    return q;
+}
+
+static void DeadReckonPosition(const SimpleAircraft& ac, uint32_t msSinceFetch, float& outLat, float& outLon)
+{
+    outLat = ac.lat;
+    outLon = ac.lon;
+    if (ac.groundspeed < 2.0f) return;
+
+    // Use position age + local elapsed time so the plot reflects actual stale offset.
+    float dt = ((float)msSinceFetch / 1000.0f) + ac.seenPos;
+    if (dt <= 0.05f || dt > 35.0f) return;
+
+    float trk = ac.heading * 0.0174533f;
+    float speedNmPerSec = ac.groundspeed / 3600.0f;
+    float distNm = speedNmPerSec * dt;
+
+    // Local tangent projection (fast, stable for short dt)
+    float dNorthNm = cosf(trk) * distNm;
+    float dEastNm = sinf(trk) * distNm;
+    float dLatDeg = dNorthNm / 60.0f;
+    float cosLat = cosf(ac.lat * 0.0174533f);
+    if (cosLat < 0.01f) cosLat = 0.01f;
+    float dLonDeg = dEastNm / (60.0f * cosLat);
+
+    outLat = ac.lat + dLatDeg;
+    outLon = ac.lon + dLonDeg;
 }
 
 // ════════════════════════════════════════════════════════════
@@ -424,6 +483,51 @@ void AircraftManager::DrawRadarFrame()
     tft.drawString(ringLabelMid,   cx + 6, cy - RING_MID_PX   + 4, 1);
     tft.drawString(ringLabelInner, cx + 6, cy - RING_INNER_PX + 4, 1);
 
+    // Subtle clutter/noise floor (feature #7)
+    static uint32_t clutterSeed = 0xA53C9E21u;
+    clutterSeed = (clutterSeed * 1664525u) + 1013904223u;
+    for (int i = 0; i < 2; i++) {
+        clutterSeed = (clutterSeed * 1664525u) + 1013904223u;
+        int rr = (int)((clutterSeed >> 24) & 0x1F);      // 0..31 px
+        clutterSeed = (clutterSeed * 1664525u) + 1013904223u;
+        float ang = ((float)(clutterSeed & 0x3FF) / 1024.0f) * 6.2831853f;
+        int px = cx + (int)(sinf(ang) * rr);
+        int py = cy - (int)(cosf(ang) * rr);
+        if (px > 1 && px < 238 && py > 1 && py < 238) {
+            uint16_t c = ((clutterSeed & 0x800) ? CLR_CROSSHAIR : CLR_BG);
+            tft.drawPixel(px, py, c);
+        }
+    }
+
+    // ── Update projected positions each frame (dead-reckoning between fetches) ──
+    uint32_t sinceFetchMs = millis() - lastFetch;
+    for (auto& [icao, lp] : lastPositions) {
+        auto it = trackedAircraft.find(icao);
+        if (it == trackedAircraft.end()) continue;
+
+        float predLat = it->second.lat;
+        float predLon = it->second.lon;
+        DeadReckonPosition(it->second, sinceFetchMs, predLat, predLon);
+
+        auto proj = ProjectCoordinateToScreen(predLat, predLon);
+        int nx = proj.first;
+        int ny = proj.second;
+        bool on = (nx > 0 && nx < 239 && ny > 0 && ny < 239);
+
+        if (lp.visible && (!on || abs(nx - lp.x) > 1 || abs(ny - lp.y) > 1)) {
+            ErasePosition(lp.x, lp.y, AIRCRAFT_ERASE_RADIUS);
+        }
+
+        if (on) {
+            lp.x = nx;
+            lp.y = ny;
+            lp.visible = true;
+        } else {
+            lp.visible = false;
+            lp.brightness = 0;
+        }
+    }
+
     // ── PPI behavior: when beam touches a blip, refresh to full brightness ──
     // Use dynamic tolerance from actual frame step and test current+previous head.
     float touchHalfAngle = delta + (DEG1 * 2.0f);
@@ -447,8 +551,23 @@ void AircraftManager::DrawRadarFrame()
         float dot = (dotNow > dotPrev) ? dotNow : dotPrev;
 
         if (dot >= beamTouchCos) {
-            lp.brightness = BRIGHTNESS_MAX;
-            DrawAircraftBlip(lp.x, lp.y, trackedAircraft.at(icao), BRIGHTNESS_MAX);
+            float beamGain = (dot - beamTouchCos) / (1.0f - beamTouchCos);
+            if (beamGain < 0.0f) beamGain = 0.0f;
+            if (beamGain > 1.0f) beamGain = 1.0f;
+
+            float rangeNorm = sqrtf(d2) / (float)r;
+            if (rangeNorm > 1.0f) rangeNorm = 1.0f;
+            float rangeGain = 1.0f - (0.35f * rangeNorm);
+
+            uint32_t sinceFetchMs2 = millis() - lastFetch;
+            float ageSec = ComputeDataAgeSec(trackedAircraft.at(icao), sinceFetchMs2);
+            float quality = ComputeQuality01(ageSec);
+
+            float excite = (float)BRIGHTNESS_MAX * (0.30f + 0.70f * beamGain * rangeGain * (0.35f + 0.65f * quality));
+            if (excite < 1.0f) excite = 1.0f;
+            if (excite > (float)BRIGHTNESS_MAX) excite = (float)BRIGHTNESS_MAX;
+            lp.brightness = (uint8_t)(excite + 0.5f);
+            DrawAircraftBlip(lp.x, lp.y, trackedAircraft.at(icao), lp.brightness);
         }
     }
 
@@ -567,6 +686,7 @@ void AircraftManager::ErasePosition(int x, int y, uint8_t radius) const
 void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, uint8_t brightness) const
 {
     AircraftType type = GetAircraftType(ac);
+    TargetGlyph glyph = GetTargetGlyph(ac);
     uint16_t baseColor;
     switch (type) {
         case AircraftType::MILITARY:  baseColor = CLR_MILITARY;  break;
@@ -574,29 +694,72 @@ void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, u
         default:                      baseColor = CLR_UNKNOWN;   break;
     }
 
-    uint16_t color = FadeColor(baseColor, brightness);
+    uint32_t sinceFetchMs = millis() - lastFetch;
+    float ageSec = ComputeDataAgeSec(ac, sinceFetchMs);
+    float quality = ComputeQuality01(ageSec);
+    if (quality <= 0.03f) return;
 
-    if (displayTriangles) {
-        // Larger symbol + longer heading indicator
-        // ADS-B track is degrees clockwise from North.
-        // Screen vector: x=sin(track), y=-cos(track)
-        float hRad = ac.heading * 0.0174533f;
-        float intensity = (float)brightness / (float)BRIGHTNESS_MAX;
-        float scale = 0.45f + (intensity * 0.65f);   // 0.45 to 1.10
-        int len = (int)(18.0f * scale);              // 8px to 19px
-        int coreRadius = 2 + (int)(intensity * 2.9f); // 2..4
-        tft.fillCircle(x, y, coreRadius, color);
-        int tx = x + (int)(sin(hRad) * len);
-        int ty = y - (int)(cos(hRad) * len);
-        tft.drawLine(x, y, tx, ty, color);
-        // No tip dot: keep a single aircraft core marker + heading vector.
-    } else {
-        // Blip size ramps smoothly with brightness.
-        float intensity = (float)brightness / (float)BRIGHTNESS_MAX;
-        int radius = 2 + (int)(intensity * 4.9f); // 2..6
-        tft.fillCircle(x, y, radius, color);
+    uint8_t effective = (uint8_t)((float)brightness * (0.25f + 0.75f * quality));
+    if (effective < 1) effective = 1;
+    if (effective > BRIGHTNESS_MAX) effective = BRIGHTNESS_MAX;
+
+    uint16_t color = FadeColor(baseColor, effective);
+
+    float hRad = ac.heading * 0.0174533f;
+    float intensity = (float)effective / (float)BRIGHTNESS_MAX;
+
+    // Heading / motion vector (feature #6)
+    int headLen = 8 + (int)(11.0f * intensity * quality);
+    int tx = x + (int)(sin(hRad) * headLen);
+    int ty = y - (int)(cos(hRad) * headLen);
+
+    // Velocity vector: 15s look-ahead, quality-scaled
+    float outerNm = rad * 60.0f;
+    if (outerNm < 0.5f) outerNm = 0.5f;
+    float leadNm = ac.groundspeed * (15.0f / 3600.0f) * quality;
+    float leadPx = (leadNm / outerNm) * (float)RING_OUTER_PX;
+    if (leadPx > 22.0f) leadPx = 22.0f;
+    if (leadPx >= 2.0f) {
+        int vx = x + (int)(sin(hRad) * leadPx);
+        int vy = y - (int)(cos(hRad) * leadPx);
+        tft.drawLine(x, y, vx, vy, FadeColor(baseColor, (uint8_t)(effective * 0.6f)));
+    }
+
+    // Class glyphs (feature #5)
+    switch (glyph) {
+        case TargetGlyph::HELICOPTER: {
+            int rr = 2 + (int)(1.5f * intensity);
+            tft.drawLine(x - rr, y, x + rr, y, color);
+            tft.drawLine(x, y - rr, x, y + rr, color);
+            tft.fillCircle(x, y, 1 + (effective > (BRIGHTNESS_MAX / 2) ? 1 : 0), color);
+            break;
+        }
+        case TargetGlyph::HEAVY: {
+            int rr = 2 + (int)(2.0f * intensity);
+            tft.fillCircle(x, y, rr, color);
+            tft.drawCircle(x, y, rr + 2, FadeColor(baseColor, (uint8_t)(effective * 0.7f)));
+            break;
+        }
+        case TargetGlyph::FIXED_WING:
+        default: {
+            if (displayTriangles) {
+                int coreRadius = 2 + (int)(2.5f * intensity);
+                tft.fillCircle(x, y, coreRadius, color);
+                tft.drawLine(x, y, tx, ty, color);
+            } else {
+                int radius = 2 + (int)(4.0f * intensity);
+                tft.fillCircle(x, y, radius, color);
+            }
+            break;
+        }
+    }
+
+    // Heading cue for all glyphs except fixed-wing triangle path where it is already drawn.
+    if (!(glyph == TargetGlyph::FIXED_WING && displayTriangles)) {
+        tft.drawLine(x, y, tx, ty, FadeColor(baseColor, (uint8_t)(effective * 0.85f)));
     }
 }
+
 
 std::pair<int, int> AircraftManager::ProjectCoordinateToScreen(float lat2, float lon2) const
 {
@@ -714,6 +877,14 @@ void AircraftManager::FetchLocal()
         ac.altitude  = item["alt_baro"] | 0.0;
         ac.heading   = item["track"] | 0.0;
         if (isnan(ac.heading)) ac.heading = 0.0;
+        ac.groundspeed = item["gs"] | 0.0;
+        if (isnan(ac.groundspeed) || ac.groundspeed < 0.0f) ac.groundspeed = 0.0f;
+        ac.seen = item["seen"] | 0.0;
+        if (isnan(ac.seen) || ac.seen < 0.0f) ac.seen = 0.0f;
+        ac.seenPos = item["seen_pos"] | ac.seen;
+        if (isnan(ac.seenPos) || ac.seenPos < 0.0f) ac.seenPos = ac.seen;
+        const char* cat = item["category"];
+        ac.category = cat ? cat : "";
         const char* sq = item["squawk"];
         ac.squawk    = sq ? sq : "";
 

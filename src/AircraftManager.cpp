@@ -22,10 +22,12 @@ constexpr uint16_t CLR_UNKNOWN     = 0x0520;       // Dark green
 constexpr uint32_t SCAN_INTERVAL   = 40;           // ~25fps for smoother sweep on ESP8266
 constexpr uint32_t ROTATION_MS     = 10000;        // 1 full sweep = 10s
 constexpr uint32_t FETCH_DEFAULT   = ROTATION_MS;  // fetch at each rotation
+constexpr uint32_t DECAY_INTERVAL_MS = 500;        // 18 levels @ 500ms = ~9s fade
 constexpr int      MAX_AIRCRAFT    = 24;           // draw/load protection
 constexpr int      MAX_RESP_BYTES  = 8192;         // heap protection
 constexpr float    SCAN_SPEED      = (6.2831853f / ROTATION_MS);  // exact 1 rev / 10s
 constexpr uint8_t  AIRCRAFT_ERASE_RADIUS = 22;     // clears icon + heading vector fully
+constexpr uint8_t  BRIGHTNESS_MAX  = 18;           // phosphor persistence ceiling
 
 // Ring geometry (outer is max range; inner rings are ~66% and ~33%).
 constexpr int      RING_OUTER_PX   = 110;
@@ -188,10 +190,10 @@ void AircraftManager::Update()
         }
     }
 
-    // ── PPI phosphor decay: dim blips once per second ──
-    // 5 brightness levels → blips fade over ~5 seconds, gone by next rotation
+    // ── PPI phosphor decay: dim blips at fixed cadence ──
+    // 18 brightness levels @ 500ms -> ~9 seconds fade out.
     static uint32_t lastDecay = 0;
-    if (millis() - lastDecay >= 1000) {
+    if (millis() - lastDecay >= DECAY_INTERVAL_MS) {
         DecayAircraft();
         lastDecay = millis();
     }
@@ -200,6 +202,22 @@ void AircraftManager::Update()
 // ── Called once per rotation: fetch data + update projected positions ──
 void AircraftManager::RefreshAircraft()
 {
+    // Pre-fetch scrub: remove active beam head so sync stalls don't leave green wedges.
+    if (displayScanLine) {
+        const int cx = 120, cy = 120;
+        const int clear_r = 121;
+        constexpr float CLEAR_ANGLE = 0.0523599f; // 3°
+        float c0 = scanState.c;
+        float s0 = scanState.s;
+        float c1 = c0, s1 = s0;
+        RotateAngle(c1, s1, CLEAR_ANGLE);
+        tft.fillTriangle(cx, cy,
+            cx + (int)(c0 * clear_r), cy - (int)(s0 * clear_r),
+            cx + (int)(c1 * clear_r), cy - (int)(s1 * clear_r),
+            CLR_BG);
+        tft.fillCircle(cx + (int)(c0 * 119), cy - (int)(s0 * 119), 2, CLR_BG);
+    }
+
     // Fetch fresh data
     StorePrev(trackedAircraft, prevPositions);
     FetchLocal();
@@ -284,7 +302,11 @@ void AircraftManager::DrawRadarFrame()
     uint32_t nowMs = millis();
     uint32_t dtMs = (lastStepMs == 0) ? SCAN_INTERVAL : (nowMs - lastStepMs);
     lastStepMs = nowMs;
-    if (dtMs > 250) dtMs = SCAN_INTERVAL; // clamp long stalls/reconnects
+    bool stalled = false;
+    if (dtMs > 250) {
+        dtMs = SCAN_INTERVAL; // keep rotation stable after network stalls
+        stalled = true;
+    }
 
     float delta = SCAN_SPEED * (float)dtMs;
     float prevHeadC = scanState.c;
@@ -311,6 +333,11 @@ void AircraftManager::DrawRadarFrame()
     if (eraseWidth < (DEG1 * 2.0f)) eraseWidth = DEG1 * 2.0f;
     if (eraseLag > (DEG1 * 10.0f)) eraseLag = DEG1 * 10.0f;
     if (eraseWidth > (DEG1 * 10.0f)) eraseWidth = DEG1 * 10.0f;
+    if (stalled) {
+        // Aggressive cleanup when a fetch stall occurred.
+        eraseLag = DEG1 * 6.0f;
+        eraseWidth = DEG1 * 8.0f;
+    }
 
     float eraseC = headC, eraseS = headS;
     RotateAngle(eraseC, eraseS, eraseLag);
@@ -321,6 +348,16 @@ void AircraftManager::DrawRadarFrame()
         cx + (int)(eraseC * erase_r), cy - (int)(eraseS * erase_r),
         cx + (int)(eraseNextC * erase_r), cy - (int)(eraseNextS * erase_r),
         CLR_BG);
+
+    if (stalled) {
+        // One extra scrub wedge to clear any sync-boundary residue.
+        float scrubC = headC, scrubS = headS;
+        RotateAngle(scrubC, scrubS, DEG1 * 4.0f);
+        tft.fillTriangle(cx, cy,
+            cx + (int)(headC * erase_r),  cy - (int)(headS * erase_r),
+            cx + (int)(scrubC * erase_r), cy - (int)(scrubS * erase_r),
+            CLR_BG);
+    }
 
     // Bright scan line (1° wedge at leading edge)
     float headNextC = headC + headS * DEG1;
@@ -410,8 +447,8 @@ void AircraftManager::DrawRadarFrame()
         float dot = (dotNow > dotPrev) ? dotNow : dotPrev;
 
         if (dot >= beamTouchCos) {
-            lp.brightness = 5;
-            DrawAircraftBlip(lp.x, lp.y, trackedAircraft.at(icao), 5);
+            lp.brightness = BRIGHTNESS_MAX;
+            DrawAircraftBlip(lp.x, lp.y, trackedAircraft.at(icao), BRIGHTNESS_MAX);
         }
     }
 
@@ -503,21 +540,20 @@ void AircraftManager::Draw(LGFX& /*buf*/)
     // No-op — rendering is incremental in RefreshAircraft()
 }
 
-// ── Fade a base color toward black by brightness level (1-5) ──
-// Level 5 = full brightness, level 1 = dim ghost
+// ── Fade a base color toward black by brightness level (1-BRIGHTNESS_MAX) ──
 uint16_t AircraftManager::FadeColor(uint16_t base, uint8_t level) const
 {
     if (level <= 0) return CLR_BG;
-    if (level >= 5) return base;
+    if (level >= BRIGHTNESS_MAX) return base;
 
-    // Extract RGB565 components, scale down by level/5
+    // Extract RGB565 components, scale down by level/BRIGHTNESS_MAX
     uint16_t r5 = (base >> 11) & 0x1F;
     uint16_t g6 = (base >> 5) & 0x3F;
     uint16_t b5 = base & 0x1F;
 
-    uint16_t fr = (r5 * level) / 5;
-    uint16_t fg = (g6 * level) / 5;
-    uint16_t fb = (b5 * level) / 5;
+    uint16_t fr = (r5 * level) / BRIGHTNESS_MAX;
+    uint16_t fg = (g6 * level) / BRIGHTNESS_MAX;
+    uint16_t fb = (b5 * level) / BRIGHTNESS_MAX;
 
     return (fr << 11) | (fg << 5) | fb;
 }
@@ -545,17 +581,19 @@ void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, u
         // ADS-B track is degrees clockwise from North.
         // Screen vector: x=sin(track), y=-cos(track)
         float hRad = ac.heading * 0.0174533f;
-        float scale = 0.45f + (brightness * 0.13f);  // 0.58 to 1.10
-        int len = (int)(18.0f * scale);              // 10px to 19px
-        int coreRadius = 2 + (brightness >= 4 ? 2 : (brightness >= 2 ? 1 : 0));
+        float intensity = (float)brightness / (float)BRIGHTNESS_MAX;
+        float scale = 0.45f + (intensity * 0.65f);   // 0.45 to 1.10
+        int len = (int)(18.0f * scale);              // 8px to 19px
+        int coreRadius = 2 + (int)(intensity * 2.9f); // 2..4
         tft.fillCircle(x, y, coreRadius, color);
         int tx = x + (int)(sin(hRad) * len);
         int ty = y - (int)(cos(hRad) * len);
         tft.drawLine(x, y, tx, ty, color);
         // No tip dot: keep a single aircraft core marker + heading vector.
     } else {
-        // Blip size doubled (2px dim ghost to 6px full)
-        int radius = 2 + (brightness >= 4 ? 4 : (brightness >= 2 ? 2 : 0));
+        // Blip size ramps smoothly with brightness.
+        float intensity = (float)brightness / (float)BRIGHTNESS_MAX;
+        int radius = 2 + (int)(intensity * 4.9f); // 2..6
         tft.fillCircle(x, y, radius, color);
     }
 }

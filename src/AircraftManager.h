@@ -40,7 +40,7 @@ struct DrawPosition {
     int x;
     int y;
     bool visible;
-    uint8_t brightness = 5;  // PPI persistence: 5=max, decays to 0
+    uint8_t brightness = 18;  // PPI persistence: 18=max, decays to 0
 };
 
 // ─── Aircraft classification ───
@@ -100,7 +100,7 @@ private:
     void UpdateAircraftDisplay();
     void StorePreviousPositions();
     void ErasePosition(int x, int y, uint8_t radius = 8) const;
-    void DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, uint8_t brightness = 5) const;
+    void DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, uint8_t brightness = 18) const;
     uint16_t FadeColor(uint16_t base, uint8_t level) const;
 
     std::pair<int, int> ProjectCoordinateToScreen(float predLat, float predLon) const;

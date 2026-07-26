@@ -260,32 +260,26 @@ void AircraftManager::DrawRadarFrame()
     float headC = scanState.c;
     float headS = scanState.s;
 
-    // ── Beam geometry: erase first, then glow/head on top ──
-    // Sweep rotates clockwise (decreasing angle), so trailing pixels are at +angle.
+    // ── Beam geometry: hard-black erase behind head, then bright head only ──
+    // Erase tracks measured delta so no green residue survives frame jitter.
 
-    // Minimal erase wedge (3° lag, 2° width)
-    constexpr float ERASE_LAG_COS = 0.99863f; // cos(3°)
-    constexpr float ERASE_LAG_SIN = 0.05234f; // sin(3°)
-    float eraseC = headC * ERASE_LAG_COS - headS * ERASE_LAG_SIN;
-    float eraseS = headS * ERASE_LAG_COS + headC * ERASE_LAG_SIN;
-    float eraseNextC = eraseC - eraseS * DEG1 * 2;
-    float eraseNextS = eraseS + eraseC * DEG1 * 2;
+    // Dynamic tail erase: lag and width scale with current frame step.
+    float eraseLag = delta + (DEG1 * 1.5f);
+    float eraseWidth = delta + (DEG1 * 2.0f);
+    if (eraseLag < (DEG1 * 2.0f)) eraseLag = DEG1 * 2.0f;
+    if (eraseWidth < (DEG1 * 2.0f)) eraseWidth = DEG1 * 2.0f;
+    if (eraseLag > (DEG1 * 10.0f)) eraseLag = DEG1 * 10.0f;
+    if (eraseWidth > (DEG1 * 10.0f)) eraseWidth = DEG1 * 10.0f;
+
+    float eraseC = headC, eraseS = headS;
+    RotateAngle(eraseC, eraseS, eraseLag);
+    float eraseNextC = eraseC, eraseNextS = eraseS;
+    RotateAngle(eraseNextC, eraseNextS, eraseWidth);
+
     tft.fillTriangle(cx, cy,
         cx + (int)(eraseC * erase_r), cy - (int)(eraseS * erase_r),
         cx + (int)(eraseNextC * erase_r), cy - (int)(eraseNextS * erase_r),
         CLR_BG);
-
-    // Tiny glow just behind head (keeps CRT feel without wide trail wedge)
-    constexpr float GLOW_LAG_COS = 0.99939f;  // cos(2°)
-    constexpr float GLOW_LAG_SIN = 0.03490f;  // sin(2°)
-    float glowC = headC * GLOW_LAG_COS - headS * GLOW_LAG_SIN;
-    float glowS = headS * GLOW_LAG_COS + headC * GLOW_LAG_SIN;
-    float glowNextC = glowC - glowS * DEG1;
-    float glowNextS = glowS + glowC * DEG1;
-    tft.fillTriangle(cx, cy,
-        cx + (int)(glowC * r), cy - (int)(glowS * r),
-        cx + (int)(glowNextC * r), cy - (int)(glowNextS * r),
-        CLR_GLOW);
 
     // Bright scan line (1° wedge at leading edge)
     float prevC = headC + headS * DEG1;

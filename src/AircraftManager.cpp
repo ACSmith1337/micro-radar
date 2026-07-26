@@ -268,22 +268,29 @@ void AircraftManager::DrawRadarFrame()
         cx + (int)(prevC * r), cy - (int)(prevS * r),
         CLR_SCAN);
 
-    // ── Erase tail: 40° behind head (extra margin for edge cleanup) ──
-    // Wider wedge catches sub-pixel rounding gaps that leave ghost pixels.
-    constexpr float ERASE_COS = 0.76604f;  // cos(40°)
-    constexpr float ERASE_SIN = 0.64279f;  // sin(40°)
-    float eraseC = headC * ERASE_COS + headS * ERASE_SIN;
-    float eraseS = headS * ERASE_COS - headC * ERASE_SIN;
-    // Erase an 8°-wide wedge to fully clear trailing-edge residue
-    float eraseNextC = eraseC + eraseS * DEG1 * 8;
-    float eraseNextS = eraseS - eraseC * DEG1 * 8;
+    // ── Tiny glow just behind head (keeps CRT feel without wide trail wedge) ──
+    constexpr float GLOW_LAG_COS = 0.99939f;  // cos(2°)
+    constexpr float GLOW_LAG_SIN = 0.03490f;  // sin(2°)
+    float glowC = headC * GLOW_LAG_COS + headS * GLOW_LAG_SIN;
+    float glowS = headS * GLOW_LAG_COS - headC * GLOW_LAG_SIN;
+    float glowNextC = glowC + glowS * DEG1;
+    float glowNextS = glowS - glowC * DEG1;
+    tft.fillTriangle(cx, cy,
+        cx + (int)(glowC * r), cy - (int)(glowS * r),
+        cx + (int)(glowNextC * r), cy - (int)(glowNextS * r),
+        CLR_GLOW);
+
+    // ── Minimal erase wedge (3° lag, 2° width) ──
+    constexpr float ERASE_LAG_COS = 0.99863f; // cos(3°)
+    constexpr float ERASE_LAG_SIN = 0.05234f; // sin(3°)
+    float eraseC = headC * ERASE_LAG_COS + headS * ERASE_LAG_SIN;
+    float eraseS = headS * ERASE_LAG_COS - headC * ERASE_LAG_SIN;
+    float eraseNextC = eraseC + eraseS * DEG1 * 2;
+    float eraseNextS = eraseS - eraseC * DEG1 * 2;
     tft.fillTriangle(cx, cy,
         cx + (int)(eraseC * erase_r), cy - (int)(eraseS * erase_r),
         cx + (int)(eraseNextC * erase_r), cy - (int)(eraseNextS * erase_r),
         CLR_BG);
-
-    // ── Redraw phosphor trail (16 thin segments, smooth gradient) ──
-    DrawTrail(cx, cy, r, headC, headS);
 
     // ── Restore static indicators overwritten by sweep (throttled) ──
     // Redrawing every frame can starve ESP8266; 10Hz is sufficient.

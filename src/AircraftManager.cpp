@@ -1,6 +1,7 @@
 #include "AircraftManager.h"
 
 #include <ArduinoJson.h>
+#include <algorithm>
 #include <cmath>
 
 // ─── P1 green phosphor CRT (RGB565 — muted, darker green) ──
@@ -348,6 +349,21 @@ void AircraftManager::DrawRadarFrame()
                 cx + (int)(bridgeC * r), cy - (int)(bridgeS * r),
                 1, CLR_SCAN);
         }
+
+        // Clear trailing bridge remnants in the erase sector to prevent green leftovers.
+        float clearC = headC;
+        float clearS = headS;
+        RotateAngle(clearC, clearS, eraseLag);
+        for (int i = 1; i < bridgeSteps; i++) {
+            RotateAngle(clearC, clearS, DEG1);
+            tft.drawLine(
+                cx + (int)(clearC * bridgeInnerR), cy - (int)(clearS * bridgeInnerR),
+                cx + (int)(clearC * erase_r),      cy - (int)(clearS * erase_r),
+                CLR_BG);
+            tft.fillCircle(
+                cx + (int)(clearC * erase_r), cy - (int)(clearS * erase_r),
+                1, CLR_BG);
+        }
     }
 
     // ── Restore static indicators overwritten by sweep (throttled) ──
@@ -548,18 +564,37 @@ std::pair<int, int> AircraftManager::ProjectCoordinateToScreen(float lat2, float
 {
     if (rad <= 0.001f) return {999, 999};
 
-    // Local tangent approximation (North/East axes)
-    // North from latitude delta, East from longitude delta * cos(latitude).
-    double north = lat2 - lat;
-    double east  = (lon2 - lon) * cos(lat * 0.0174533);
-    double dist = sqrt(north * north + east * east);
+    constexpr double DEG2RAD_F64 = 0.017453292519943295;
+    constexpr double RAD2DEG_F64 = 57.29577951308232;
 
-    float screenDist = (float)(dist / rad) * (float)RING_OUTER_PX;
-    if (dist <= 1e-9) return {120, 120};
+    const double lat1r = (double)lat * DEG2RAD_F64;
+    const double lon1r = (double)lon * DEG2RAD_F64;
+    const double lat2r = (double)lat2 * DEG2RAD_F64;
+    const double lon2r = (double)lon2 * DEG2RAD_F64;
 
-    // Screen mapping: +X east, -Y north.
-    int sx = 120 + (int)(screenDist * (east / dist));
-    int sy = 120 - (int)(screenDist * (north / dist));
+    const double dlat = lat2r - lat1r;
+    const double dlon = lon2r - lon1r;
+
+    // Great-circle central angle (radians).
+    const double sinHLat = sin(dlat * 0.5);
+    const double sinHLon = sin(dlon * 0.5);
+    double a = sinHLat * sinHLat + cos(lat1r) * cos(lat2r) * sinHLon * sinHLon;
+    if (a < 0.0) a = 0.0;
+    if (a > 1.0) a = 1.0;
+    const double central = 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
+
+    const double distDeg = central * RAD2DEG_F64;
+    const float screenDist = (float)((distDeg / (double)rad) * (double)RING_OUTER_PX);
+    if (screenDist <= 1e-6f) return {120, 120};
+
+    // Initial bearing from north, clockwise.
+    const double y = sin(dlon) * cos(lat2r);
+    const double x = cos(lat1r) * sin(lat2r) - sin(lat1r) * cos(lat2r) * cos(dlon);
+    const double brg = atan2(y, x);
+
+    // Screen mapping: +X east (sin), -Y north (cos).
+    int sx = 120 + (int)(screenDist * sin(brg));
+    int sy = 120 - (int)(screenDist * cos(brg));
     return {sx, sy};
 }
 
@@ -612,8 +647,12 @@ void AircraftManager::FetchLocal()
         return;
     }
 
-    std::map<String, SimpleAircraft> next;
-    for (int i = 0; i < arr.size() && next.size() < MAX_AIRCRAFT; i++) {
+    // Keep nearest in-range aircraft so low-priority targets (e.g. helicopters)
+    // are not dropped just because they appear later in the JSON list.
+    std::vector<std::pair<double, SimpleAircraft>> candidates;
+    candidates.reserve(arr.size());
+
+    for (int i = 0; i < arr.size(); i++) {
         auto item = arr[i];
         const char* hexVal = item["hex"];
         if (!hexVal) continue;
@@ -622,7 +661,13 @@ void AircraftManager::FetchLocal()
 
         double latVal = item["lat"] | 0.0;
         double lonVal = item["lon"] | 0.0;
-        if (latVal == 0 && lonVal == 0) continue;
+        if (latVal == 0.0 && lonVal == 0.0) continue;
+
+        // Coarse in-range filter in degree-space.
+        double dLat = latVal - (double)lat;
+        double dLon = (lonVal - (double)lon) * cos((double)lat * 0.0174533);
+        double distDegApprox = sqrt(dLat * dLat + dLon * dLon);
+        if (rad > 0.001f && distDegApprox > (double)rad) continue;
 
         SimpleAircraft ac;
         ac.icao      = icao;
@@ -634,12 +679,22 @@ void AircraftManager::FetchLocal()
         const char* sq = item["squawk"];
         ac.squawk    = sq ? sq : "";
 
-        next[icao] = ac;
+        candidates.push_back({distDegApprox, ac});
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    std::map<String, SimpleAircraft> next;
+    for (size_t i = 0; i < candidates.size() && i < MAX_AIRCRAFT; i++) {
+        const auto& ac = candidates[i].second;
+        next[ac.icao] = ac;
     }
 
     doc.clear();
     trackedAircraft = next;
-    Serial.printf("[FETCH] Tracked %d aircraft\n", trackedAircraft.size());
+    Serial.printf("[FETCH] In-range=%d tracked=%d (cap=%d)\n",
+                  (int)candidates.size(), (int)trackedAircraft.size(), MAX_AIRCRAFT);
 }
 
 // ── Legacy stub ──

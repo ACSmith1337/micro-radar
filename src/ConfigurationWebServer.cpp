@@ -45,7 +45,7 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                 </div>
 
                 <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-                    <span>Radius (in °):</span>
+                    <span>Radius (outer ring, in &deg;):</span>
                     <input
                         name="radius"
                         type="text"
@@ -53,7 +53,7 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                         pattern="[0-9]+\.?[0-9]*"
                         value='%RADIUS%'
                         class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
-                    <small style="color:#666; margin-left:4px; white-space:nowrap;">1° ≈ 60 NM</small>
+                    <small id="ring-info" style="color:#666; margin-left:4px;">1&deg; &asymp; 60 NM</small>
                 </label>
 
                 <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
@@ -178,8 +178,35 @@ static const char CONFIG_HTML[] PROGMEM = R"(
             });
 
             const ds = document.querySelector('select[name="datasource"]');
+            const radiusInput = document.querySelector('input[name="radius"]');
+            const ringInfo = document.getElementById('ring-info');
             const localFields = document.getElementById('local-fields');
             const openskyFields = document.getElementById('opensky-fields');
+
+            function fmtNm(v) {
+                if (!isFinite(v) || v <= 0) return '--';
+                if (v < 10) return v.toFixed(1);
+                return Math.round(v).toString();
+            }
+
+            function updateRingInfo() {
+                const degOuter = parseFloat(radiusInput.value);
+                if (!isFinite(degOuter) || degOuter <= 0) {
+                    ringInfo.innerHTML = 'Outer ring = radius. Mid = 67.3%. Inner = 33.6%. 1&deg; &asymp; 60 NM';
+                    return;
+                }
+
+                const degMid = degOuter * (74.0 / 110.0);
+                const degInner = degOuter * (37.0 / 110.0);
+                const nmOuter = degOuter * 60.0;
+                const nmMid = degMid * 60.0;
+                const nmInner = degInner * 60.0;
+
+                ringInfo.innerHTML =
+                    'Outer ' + degOuter.toFixed(2) + '&deg; (' + fmtNm(nmOuter) + ' NM)' +
+                    ' | Mid ' + degMid.toFixed(2) + '&deg; (' + fmtNm(nmMid) + ' NM)' +
+                    ' | Inner ' + degInner.toFixed(2) + '&deg; (' + fmtNm(nmInner) + ' NM)';
+            }
 
             function toggleSections() {
                 if (ds.value === 'local') {
@@ -193,6 +220,8 @@ static const char CONFIG_HTML[] PROGMEM = R"(
 
             ds.addEventListener('change', toggleSections);
             toggleSections();
+            radiusInput.addEventListener('input', updateRingInfo);
+            updateRingInfo();
         </script>
     </body>
 </html>

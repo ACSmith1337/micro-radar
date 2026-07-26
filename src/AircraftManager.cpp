@@ -23,7 +23,7 @@ constexpr uint32_t SCAN_INTERVAL   = 40;           // ~25fps for smoother sweep 
 constexpr uint32_t ROTATION_MS     = 10000;        // 1 full sweep = 10s
 constexpr uint32_t FETCH_DEFAULT   = ROTATION_MS;  // fetch at each rotation
 constexpr uint32_t DECAY_INTERVAL_MS = 375;        // 24 levels @ 375ms = ~9s fade, smoother
-constexpr uint32_t WARMUP_MS       = 7000;         // startup warm-up screen before first sync
+constexpr uint32_t WARMUP_MS       = 10000;        // startup warm-up screen before first sync
 constexpr int      MAX_AIRCRAFT    = 24;           // draw/load protection
 constexpr int      MAX_RESP_BYTES  = 8192;         // heap protection
 constexpr float    SCAN_SPEED      = (6.2831853f / ROTATION_MS);  // exact 1 rev / 10s

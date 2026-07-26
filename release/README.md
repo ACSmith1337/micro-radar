@@ -5,9 +5,10 @@ An authentic PPI-style radar display for ADS-B data using an ESP8266 and GC9A01 
 ![Radar Display](images/radar-display.jpg)
 
 ## Features
-- Authentic PPI radar display with phosphor glow effects
+- Authentic PPI radar display with enhanced phosphor glow effects
 - Smooth aircraft interpolation between data updates
 - Color-coded aircraft (green for commercial, red for military)
+- Realistic phosphor persistence and bloom effects
 - Configurable via web interface
 - Compatible with readsb/dump1090 aircraft.json feeds
 

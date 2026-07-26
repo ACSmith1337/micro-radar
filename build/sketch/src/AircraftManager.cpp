@@ -11,19 +11,21 @@
 constexpr uint16_t CLR_BG          = 0x0000;       // Black
 constexpr uint16_t CLR_RING        = 0x0140;       // Dim muted green (R=0 G=10 B=0)
 constexpr uint16_t CLR_RING_BRIGHT = 0x02E0;       // Brighter green labels
-constexpr uint16_t CLR_SCAN        = 0x07E0;       // Bright green scan line for visible PPI sweep
+constexpr uint16_t CLR_SCAN        = 0x07FF;       // Bright green scan line for visible PPI sweep (max brightness)
 constexpr uint16_t CLR_GLOW        = 0x05A0;       // Scan glow
 constexpr uint16_t CLR_TRAIL       = 0x0320;       // Phosphor fade
 constexpr uint16_t CLR_CROSSHAIR   = 0x00A0;       // Barely visible
-constexpr uint16_t CLR_COMMERIAL   = 0x07E0;       // Civilian green
+constexpr uint16_t CLR_COMMERIAL   = 0x05E0;       // Civilian green (darker than scan line)
 constexpr uint16_t CLR_MILITARY    = 0xF800;       // Red
 constexpr uint16_t CLR_UNKNOWN     = 0x0520;       // Dark green
+constexpr uint16_t CLR_GLOW_COMM   = 0x03E0;       // Commercial aircraft glow
+constexpr uint16_t CLR_GLOW_MIL    = 0xFC00;       // Military aircraft glow
 
 // ─── Timing ───
 constexpr uint32_t SCAN_INTERVAL   = 40;           // ~25fps for smoother sweep on ESP8266
 constexpr uint32_t ROTATION_MS     = 10000;        // 1 full sweep = 10s
 constexpr uint32_t FETCH_DEFAULT   = ROTATION_MS;  // fetch at each rotation
-constexpr uint32_t DECAY_INTERVAL_MS = 375;        // 24 levels @ 375ms = ~9s fade, smoother
+constexpr uint32_t DECAY_INTERVAL_MS = 300;        // 24 levels @ 300ms = ~7.2s fade, more responsive
 constexpr uint32_t WARMUP_MS       = 10000;        // startup warm-up screen before first sync
 constexpr int      MAX_AIRCRAFT    = 24;           // draw/load protection
 constexpr int      MAX_RESP_BYTES  = 8192;         // heap protection
@@ -46,10 +48,11 @@ constexpr float TRAIL_TAIL_COS    = 0.8480481f;     // cos(32°)
 constexpr float TRAIL_TAIL_SIN    = 0.5299193f;     // sin(32°)
 
 // Phosphor green gradient for 10 segments: black tail → green head.
+// Enhanced gradient with more noticeable steps for realistic phosphor bloom
 constexpr uint16_t TRAIL_GRADIENT[] = {
-    0x0000, 0x0000, 0x0000, 0x0000,
-    0x0060, 0x00C0, 0x0180, 0x02A0,
-    0x0480, 0x06C0
+    0x0000, 0x0000, 0x0020, 0x0040,
+    0x00A0, 0x0140, 0x0220, 0x0360,
+    0x04E0, 0x06C0
 };  // 10 entries = TRAIL_SEGMENTS — visible black→green phosphor ramp
 
 // ── Precomputed tick directions (30° increments) ──
@@ -752,10 +755,20 @@ void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, u
     AircraftType type = GetAircraftType(ac);
     TargetGlyph glyph = GetTargetGlyph(ac);
     uint16_t baseColor;
+    uint16_t glowColor;
     switch (type) {
-        case AircraftType::MILITARY:  baseColor = CLR_MILITARY;  break;
-        case AircraftType::COMMERCIAL: baseColor = CLR_COMMERIAL; break;
-        default:                      baseColor = CLR_UNKNOWN;   break;
+        case AircraftType::MILITARY:  
+            baseColor = CLR_MILITARY;  
+            glowColor = CLR_GLOW_MIL;
+            break;
+        case AircraftType::COMMERCIAL: 
+            baseColor = CLR_COMMERIAL; 
+            glowColor = CLR_GLOW_COMM;
+            break;
+        default:                      
+            baseColor = CLR_UNKNOWN;   
+            glowColor = CLR_UNKNOWN;
+            break;
     }
 
     uint32_t sinceFetchMs = millis() - lastFetch;
@@ -768,6 +781,7 @@ void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, u
     if (effective > BRIGHTNESS_MAX) effective = BRIGHTNESS_MAX;
 
     uint16_t color = FadeColor(baseColor, effective);
+    uint16_t glow = FadeColor(glowColor, effective);
 
     float hRad = ac.heading * 0.0174533f;
 
@@ -776,6 +790,12 @@ void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, u
     const int headLen = 10;
     int tx = x + (int)(sin(hRad) * headLen);
     int ty = y - (int)(cos(hRad) * headLen);
+
+    // Add phosphor glow effect - draw a larger, dimmer circle behind the blip
+    if (effective > BRIGHTNESS_MAX * 0.3f) {
+        uint16_t glowFaded = FadeColor(glowColor, (uint8_t)(effective * 0.4f));
+        tft.fillCircle(x, y, 5, glowFaded);  // Outer glow
+    }
 
     // Velocity vector: 15s look-ahead (fixed geometry, color scales with fade)
     float outerNm = rad * 60.0f;
@@ -802,6 +822,11 @@ void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, u
             const int rr = 4;
             tft.fillCircle(x, y, rr, color);
             tft.drawCircle(x, y, rr + 1, FadeColor(baseColor, (uint8_t)(effective * 0.7f)));
+            // Add glow for heavy aircraft
+            if (effective > BRIGHTNESS_MAX * 0.5f) {
+                uint16_t outerGlow = FadeColor(glowColor, (uint8_t)(effective * 0.3f));
+                tft.drawCircle(x, y, rr + 2, outerGlow);
+            }
             break;
         }
         case TargetGlyph::FIXED_WING:
@@ -811,6 +836,11 @@ void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, u
                 tft.drawLine(x, y, tx, ty, color);
             } else {
                 tft.fillCircle(x, y, 3, color);
+                // Add subtle glow around regular aircraft
+                if (effective > BRIGHTNESS_MAX * 0.4f) {
+                    uint16_t softGlow = FadeColor(glowColor, (uint8_t)(effective * 0.2f));
+                    tft.drawCircle(x, y, 4, softGlow);
+                }
             }
             break;
         }

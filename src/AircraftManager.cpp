@@ -260,37 +260,40 @@ void AircraftManager::DrawRadarFrame()
     float headC = scanState.c;
     float headS = scanState.s;
 
-    // ── Bright scan line (1° wedge at leading edge) ──
+    // ── Beam geometry: erase first, then glow/head on top ──
+    // Sweep rotates clockwise (decreasing angle), so trailing pixels are at +angle.
+
+    // Minimal erase wedge (3° lag, 2° width)
+    constexpr float ERASE_LAG_COS = 0.99863f; // cos(3°)
+    constexpr float ERASE_LAG_SIN = 0.05234f; // sin(3°)
+    float eraseC = headC * ERASE_LAG_COS - headS * ERASE_LAG_SIN;
+    float eraseS = headS * ERASE_LAG_COS + headC * ERASE_LAG_SIN;
+    float eraseNextC = eraseC - eraseS * DEG1 * 2;
+    float eraseNextS = eraseS + eraseC * DEG1 * 2;
+    tft.fillTriangle(cx, cy,
+        cx + (int)(eraseC * erase_r), cy - (int)(eraseS * erase_r),
+        cx + (int)(eraseNextC * erase_r), cy - (int)(eraseNextS * erase_r),
+        CLR_BG);
+
+    // Tiny glow just behind head (keeps CRT feel without wide trail wedge)
+    constexpr float GLOW_LAG_COS = 0.99939f;  // cos(2°)
+    constexpr float GLOW_LAG_SIN = 0.03490f;  // sin(2°)
+    float glowC = headC * GLOW_LAG_COS - headS * GLOW_LAG_SIN;
+    float glowS = headS * GLOW_LAG_COS + headC * GLOW_LAG_SIN;
+    float glowNextC = glowC - glowS * DEG1;
+    float glowNextS = glowS + glowC * DEG1;
+    tft.fillTriangle(cx, cy,
+        cx + (int)(glowC * r), cy - (int)(glowS * r),
+        cx + (int)(glowNextC * r), cy - (int)(glowNextS * r),
+        CLR_GLOW);
+
+    // Bright scan line (1° wedge at leading edge)
     float prevC = headC + headS * DEG1;
     float prevS = headS - headC * DEG1;
     tft.fillTriangle(cx, cy,
         cx + (int)(headC * r), cy - (int)(headS * r),
         cx + (int)(prevC * r), cy - (int)(prevS * r),
         CLR_SCAN);
-
-    // ── Tiny glow just behind head (keeps CRT feel without wide trail wedge) ──
-    constexpr float GLOW_LAG_COS = 0.99939f;  // cos(2°)
-    constexpr float GLOW_LAG_SIN = 0.03490f;  // sin(2°)
-    float glowC = headC * GLOW_LAG_COS + headS * GLOW_LAG_SIN;
-    float glowS = headS * GLOW_LAG_COS - headC * GLOW_LAG_SIN;
-    float glowNextC = glowC + glowS * DEG1;
-    float glowNextS = glowS - glowC * DEG1;
-    tft.fillTriangle(cx, cy,
-        cx + (int)(glowC * r), cy - (int)(glowS * r),
-        cx + (int)(glowNextC * r), cy - (int)(glowNextS * r),
-        CLR_GLOW);
-
-    // ── Minimal erase wedge (3° lag, 2° width) ──
-    constexpr float ERASE_LAG_COS = 0.99863f; // cos(3°)
-    constexpr float ERASE_LAG_SIN = 0.05234f; // sin(3°)
-    float eraseC = headC * ERASE_LAG_COS + headS * ERASE_LAG_SIN;
-    float eraseS = headS * ERASE_LAG_COS - headC * ERASE_LAG_SIN;
-    float eraseNextC = eraseC + eraseS * DEG1 * 2;
-    float eraseNextS = eraseS - eraseC * DEG1 * 2;
-    tft.fillTriangle(cx, cy,
-        cx + (int)(eraseC * erase_r), cy - (int)(eraseS * erase_r),
-        cx + (int)(eraseNextC * erase_r), cy - (int)(eraseNextS * erase_r),
-        CLR_BG);
 
     // ── Restore static indicators overwritten by sweep (throttled) ──
     // Redrawing every frame can starve ESP8266; 10Hz is sufficient.

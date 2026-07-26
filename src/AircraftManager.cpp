@@ -10,9 +10,9 @@
 constexpr uint16_t CLR_BG          = 0x0000;       // Black
 constexpr uint16_t CLR_RING        = 0x0140;       // Dim muted green (R=0 G=10 B=0)
 constexpr uint16_t CLR_RING_BRIGHT = 0x02E0;       // Brighter green labels
-constexpr uint16_t CLR_SCAN        = 0x0520;       // Dark green scan line (R=0 G=42 B=0)
-constexpr uint16_t CLR_GLOW        = 0x0320;       // Scan glow
-constexpr uint16_t CLR_TRAIL       = 0x0120;       // Phosphor fade
+constexpr uint16_t CLR_SCAN        = 0x07E0;       // Bright green scan line for visible PPI sweep
+constexpr uint16_t CLR_GLOW        = 0x05A0;       // Scan glow
+constexpr uint16_t CLR_TRAIL       = 0x0320;       // Phosphor fade
 constexpr uint16_t CLR_CROSSHAIR   = 0x00A0;       // Barely visible
 constexpr uint16_t CLR_COMMERIAL   = 0x07E0;       // Civilian green
 constexpr uint16_t CLR_MILITARY    = 0xF800;       // Red
@@ -45,10 +45,10 @@ constexpr float TRAIL_TAIL_SIN    = 0.5299193f;     // sin(32°)
 
 // Phosphor green gradient for 10 segments: black tail → green head.
 constexpr uint16_t TRAIL_GRADIENT[] = {
-    0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
-    0x0000, 0x0000,                                   // Hard black tail erase (7)
-    0x00C0, 0x01C0, 0x0320                            // Subtle green near head (3)
-};  // 10 entries = TRAIL_SEGMENTS
+    0x0000, 0x0000, 0x0000, 0x0000,
+    0x0060, 0x00C0, 0x0180, 0x02A0,
+    0x0480, 0x06C0
+};  // 10 entries = TRAIL_SEGMENTS — visible black→green phosphor ramp
 
 // ── Precomputed tick directions (30° increments) ──
 constexpr const float TICK_DIRS[] = {
@@ -332,7 +332,7 @@ bool AircraftManager::RefreshAircraft()
             if (lastPositions.count(icao) && lastPositions[icao].visible) {
                 ErasePosition(lastPositions[icao].x, lastPositions[icao].y, AIRCRAFT_ERASE_RADIUS);
             }
-            uint8_t b = lastPositions.count(icao) ? lastPositions[icao].brightness : 0;
+            uint8_t b = lastPositions.count(icao) ? lastPositions[icao].brightness : (BRIGHTNESS_MAX / 2);
             lastPositions[icao] = {x, y, true, b};
         } else {
             if (lastPositions.count(icao) && lastPositions[icao].visible) {
@@ -436,6 +436,9 @@ void AircraftManager::DrawRadarFrame()
         cx + (int)(eraseC * erase_r), cy - (int)(eraseS * erase_r),
         cx + (int)(eraseNextC * erase_r), cy - (int)(eraseNextS * erase_r),
         CLR_BG);
+
+    // Visible phosphor trail behind beam head.
+    DrawTrail(cx, cy, r, headC, headS);
 
     if (stalled) {
         // One extra scrub wedge to clear any sync-boundary residue.
@@ -592,8 +595,8 @@ void AircraftManager::DrawRadarFrame()
             float ageSec = ComputeDataAgeSec(trackedAircraft.at(icao), sinceFetchMs2);
             float quality = ComputeQuality01(ageSec);
 
-            float excite = (float)BRIGHTNESS_MAX * (0.30f + 0.70f * beamGain * rangeGain * (0.35f + 0.65f * quality));
-            if (excite < 1.0f) excite = 1.0f;
+            float excite = (float)BRIGHTNESS_MAX * (0.60f + 0.40f * beamGain * rangeGain * (0.50f + 0.50f * quality));
+            if (excite < (float)(BRIGHTNESS_MAX * 0.55f)) excite = (float)(BRIGHTNESS_MAX * 0.55f);
             if (excite > (float)BRIGHTNESS_MAX) excite = (float)BRIGHTNESS_MAX;
             lp.brightness = (uint8_t)(excite + 0.5f);
             DrawAircraftBlip(lp.x, lp.y, trackedAircraft.at(icao), lp.brightness);

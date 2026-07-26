@@ -44,7 +44,7 @@ struct DrawPosition {
     int x;
     int y;
     bool visible;
-    uint8_t brightness = 18;  // PPI persistence: 18=max, decays to 0
+    uint8_t brightness = 24;  // PPI persistence: 24=max, decays to 0
 };
 
 // ─── Aircraft classification ───
@@ -89,6 +89,8 @@ private:
 
     uint32_t lastFetch = 0;
     uint32_t fetchInterval = 3000;
+    bool initialSyncComplete = false;
+    uint32_t initialSyncLastAttempt = 0;
 
     std::map<String, SimpleAircraft> trackedAircraft;
     std::map<String, InterpPosition> prevPositions;
@@ -98,18 +100,18 @@ private:
     void DrawRadarGrid() const;
     void DrawRadarFrame();
     void DrawTrail(int cx, int cy, int r, float headC, float headS);
-    void RefreshAircraft();
+    bool RefreshAircraft();
     void DecayAircraft();
 
     void UpdateAircraftDisplay();
     void StorePreviousPositions();
     void ErasePosition(int x, int y, uint8_t radius = 8) const;
-    void DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, uint8_t brightness = 18) const;
+    void DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, uint8_t brightness = 24) const;
     uint16_t FadeColor(uint16_t base, uint8_t level) const;
 
     std::pair<int, int> ProjectCoordinateToScreen(float predLat, float predLon) const;
 
-    void FetchLocal();
+    bool FetchLocal();
 
     // External references
     ConfigurationWebServer& configServer;

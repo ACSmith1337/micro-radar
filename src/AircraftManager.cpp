@@ -22,12 +22,12 @@ constexpr uint16_t CLR_UNKNOWN     = 0x0520;       // Dark green
 constexpr uint32_t SCAN_INTERVAL   = 40;           // ~25fps for smoother sweep on ESP8266
 constexpr uint32_t ROTATION_MS     = 10000;        // 1 full sweep = 10s
 constexpr uint32_t FETCH_DEFAULT   = ROTATION_MS;  // fetch at each rotation
-constexpr uint32_t DECAY_INTERVAL_MS = 500;        // 18 levels @ 500ms = ~9s fade
+constexpr uint32_t DECAY_INTERVAL_MS = 375;        // 24 levels @ 375ms = ~9s fade, smoother
 constexpr int      MAX_AIRCRAFT    = 24;           // draw/load protection
 constexpr int      MAX_RESP_BYTES  = 8192;         // heap protection
 constexpr float    SCAN_SPEED      = (6.2831853f / ROTATION_MS);  // exact 1 rev / 10s
 constexpr uint8_t  AIRCRAFT_ERASE_RADIUS = 22;     // clears icon + heading vector fully
-constexpr uint8_t  BRIGHTNESS_MAX  = 18;           // phosphor persistence ceiling
+constexpr uint8_t  BRIGHTNESS_MAX  = 24;           // smoother phosphor persistence ceiling
 
 // Ring geometry (outer is max range; inner rings are ~66% and ~33%).
 constexpr int      RING_OUTER_PX   = 110;
@@ -217,20 +217,45 @@ void AircraftManager::Initialise()
         Serial.println("[RADAR] WARNING: radius not set — no aircraft will appear");
     }
 
-    // ── Reset scan state ──
+    // ── Reset scan/startup state ──
     scanState = {0.0f, 1.0f, 0.0f};
+    initialSyncComplete = false;
+    initialSyncLastAttempt = 0;
 
-    // ── Clear screen + draw grid ONCE (static elements) ──
+    // ── Clear screen + draw grid + startup status ──
     tft.fillScreen(CLR_BG);
     DrawRadarGrid();
+    tft.setTextColor(CLR_RING_BRIGHT);
+    tft.setTextSize(1);
+    tft.drawCentreString("SYNC READSB...", 120, 112, 1);
 }
 
 void AircraftManager::Update()
 {
     static uint32_t lastRotation = 0;
 
+    // ── Startup gate: fetch one valid readsb frame before sweep starts ──
+    if (!initialSyncComplete) {
+        uint32_t now = millis();
+        if (initialSyncLastAttempt == 0 || (now - initialSyncLastAttempt) >= 1500) {
+            initialSyncLastAttempt = now;
+            if (RefreshAircraft()) {
+                initialSyncComplete = true;
+                lastRotation = now;
+                tft.fillScreen(CLR_BG);
+                DrawRadarGrid();
+                Serial.println("[RADAR] Initial sync complete, starting sweep");
+            } else {
+                // Keep user-visible status while retrying.
+                tft.setTextColor(CLR_RING_BRIGHT, CLR_BG);
+                tft.drawCentreString("SYNC READSB...", 120, 112, 1);
+            }
+        }
+        return;
+    }
+
     // ── Called once per rotation: fetch one ADS-B frame ──
-    if (millis() - lastRotation >= fetchInterval) {
+    if (lastRotation == 0 || (millis() - lastRotation) >= fetchInterval) {
         lastRotation = millis();
         RefreshAircraft();
     }
@@ -250,7 +275,7 @@ void AircraftManager::Update()
     }
 
     // ── PPI phosphor decay: dim blips at fixed cadence ──
-    // 18 brightness levels @ 500ms -> ~9 seconds fade out.
+    // 24 brightness levels @ 375ms -> ~9 seconds fade out.
     static uint32_t lastDecay = 0;
     if (millis() - lastDecay >= DECAY_INTERVAL_MS) {
         DecayAircraft();
@@ -259,7 +284,7 @@ void AircraftManager::Update()
 }
 
 // ── Called once per rotation: fetch data + update projected positions ──
-void AircraftManager::RefreshAircraft()
+bool AircraftManager::RefreshAircraft()
 {
     // Pre-fetch scrub: remove active beam head so sync stalls don't leave green wedges.
     if (displayScanLine) {
@@ -279,7 +304,10 @@ void AircraftManager::RefreshAircraft()
 
     // Fetch fresh data
     StorePrev(trackedAircraft, prevPositions);
-    FetchLocal();
+    bool fetchOk = FetchLocal();
+    if (!fetchOk) {
+        return false;
+    }
     lastFetch = millis();
 
     // Erase blips that are no longer tracked
@@ -313,6 +341,8 @@ void AircraftManager::RefreshAircraft()
             lastPositions[icao] = {x, y, false, 0};
         }
     }
+
+    return true;
 }
 
 // ── Called each scan frame: decay blip brightness, erase if faded out ──
@@ -799,13 +829,13 @@ std::pair<int, int> AircraftManager::ProjectCoordinateToScreen(float lat2, float
     return {sx, sy};
 }
 
-void AircraftManager::FetchLocal()
+bool AircraftManager::FetchLocal()
 {
     String host = configServer.GetStoredString("readsbhost");
     if (host.isEmpty()) {
         static int warnCount = 0;
         if (++warnCount <= 3) Serial.println("[FETCH] No readsb host configured");
-        return;
+        return false;
     }
 
     String port = configServer.GetStoredString("readsbport");
@@ -820,17 +850,17 @@ void AircraftManager::FetchLocal()
     HttpResult result = http.Get(url);
     if (!result.success) {
         Serial.printf("[FETCH] FAILED: code=%d err=%s\n", result.statusCode, result.errorMessage.c_str());
-        return;
+        return false;
     }
     Serial.printf("[FETCH] Got %d bytes\n", result.response.length());
     if (result.response.length() == 0) {
         Serial.println("[FETCH] Empty response");
-        return;
+        return false;
     }
     if (result.response.length() > MAX_RESP_BYTES) {
         Serial.printf("[FETCH] Response %d bytes > %d cap, discarding\n",
                        result.response.length(), MAX_RESP_BYTES);
-        return;
+        return false;
     }
 
     JsonDocument doc;
@@ -838,14 +868,14 @@ void AircraftManager::FetchLocal()
     if (err) {
         Serial.printf("[FETCH] JSON parse error: %s\n", err.c_str());
         doc.clear();
-        return;
+        return false;
     }
 
     auto arr = doc["aircraft"];
     if (!arr.is<JsonArray>()) {
         Serial.println("[FETCH] No 'aircraft' array in JSON");
         doc.clear();
-        return;
+        return false;
     }
 
     // Keep nearest in-range aircraft so low-priority targets (e.g. helicopters)
@@ -853,7 +883,8 @@ void AircraftManager::FetchLocal()
     std::vector<std::pair<double, SimpleAircraft>> candidates;
     candidates.reserve(arr.size());
 
-    for (int i = 0; i < arr.size(); i++) {
+    int droppedNoPos = 0;
+    for (size_t i = 0; i < arr.size(); i++) {
         auto item = arr[i];
         const char* hexVal = item["hex"];
         if (!hexVal) continue;
@@ -862,7 +893,10 @@ void AircraftManager::FetchLocal()
 
         double latVal = item["lat"] | 0.0;
         double lonVal = item["lon"] | 0.0;
-        if (latVal == 0.0 && lonVal == 0.0) continue;
+        if (latVal == 0.0 && lonVal == 0.0) {
+            droppedNoPos++;
+            continue;
+        }
 
         // Coarse in-range filter in degree-space.
         double dLat = latVal - (double)lat;
@@ -902,8 +936,9 @@ void AircraftManager::FetchLocal()
 
     doc.clear();
     trackedAircraft = next;
-    Serial.printf("[FETCH] In-range=%d tracked=%d (cap=%d)\n",
-                  (int)candidates.size(), (int)trackedAircraft.size(), MAX_AIRCRAFT);
+    Serial.printf("[FETCH] In-range=%d tracked=%d (cap=%d) dropped_no_pos=%d\n",
+                  (int)candidates.size(), (int)trackedAircraft.size(), MAX_AIRCRAFT, droppedNoPos);
+    return true;
 }
 
 // ── Legacy stub ──

@@ -20,11 +20,11 @@ constexpr uint16_t CLR_UNKNOWN     = 0x0520;       // Dark green
 
 // ─── Timing ───
 constexpr uint32_t SCAN_INTERVAL   = 40;           // ~25fps for smoother sweep on ESP8266
-constexpr uint32_t ROTATION_MS     = 6000;         // 1 full sweep = 6s
+constexpr uint32_t ROTATION_MS     = 10000;        // 1 full sweep = 10s
 constexpr uint32_t FETCH_DEFAULT   = ROTATION_MS;  // fetch at each rotation
 constexpr int      MAX_AIRCRAFT    = 24;           // draw/load protection
 constexpr int      MAX_RESP_BYTES  = 8192;         // heap protection
-constexpr float    SCAN_SPEED      = (6.2831853f / ROTATION_MS);  // exact 1 rev / 6s
+constexpr float    SCAN_SPEED      = (6.2831853f / ROTATION_MS);  // exact 1 rev / 10s
 constexpr uint8_t  AIRCRAFT_ERASE_RADIUS = 22;     // clears icon + heading vector fully
 
 // Ring geometry (outer is max range; inner rings are ~66% and ~33%).

@@ -7,8 +7,11 @@ An authentic PPI-style radar display for ADS-B data using an ESP8266 and GC9A01 
 ## Features
 - Authentic PPI radar display with enhanced phosphor glow effects
 - Smooth aircraft interpolation between data updates
-- Color-coded aircraft (green for commercial, red for military)
-- Realistic phosphor persistence and bloom effects
+- Color-coded aircraft (green/gold for commercial, orange for military)
+- Emergency squawk code alerts (7500, 7600, 7700) with flashing red overlay
+- Two phosphor color schemes: green (P1) and gold (P4) — toggleable via web UI
+- Aircraft trail dots showing track history behind moving targets
+- Variable fade rates — strong signals persist longer than weak ones
 - Configurable via web interface
 - Compatible with readsb/dump1090 aircraft.json feeds
 
@@ -65,7 +68,8 @@ After flashing, the device will create a WiFi access point named "MicroRadar-Set
 - WiFi credentials for your network
 - readsb/dump1090 server address and port
 - Radar location coordinates
-- Display settings (scan line, triangles, info text)
+- Display settings (scan line, triangles, info text, trails, squawk alerts)
+- Phosphor color scheme (green P1 or gold P4)
 
 ## Assembly Instructions
 1. Connect the GC9A01 display to the ESP8266:

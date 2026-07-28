@@ -39,7 +39,7 @@ struct InterpPosition {
     bool hasPrev = false;
 };
 
-// ─── Drawing state per aircraft ──
+// ─── Drawing state per aircraft ───
 struct DrawPosition {
     int x;
     int y;
@@ -82,6 +82,8 @@ private:
     bool displayInfoText = false;
     bool displayTriangles = false;
     bool displayScanLine = true;
+    bool displayTrailDots = false;  // Dotted trail behind aircraft vs heading vector
+    bool alertSquawk = false;       // Flash emergency squawk alerts
 
     String ringLabelInner;
     String ringLabelMid;

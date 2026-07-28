@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-constexpr int HTTP_TIMEOUT_MS = 5000; // 5 second request timeout
+constexpr int HTTP_TIMEOUT_MS = 3000; // 3 second request timeout (faster fail on network issues)
 constexpr int MAX_HTTP_BODY   = 8192; // Cap response size
 
 static bool TimedWaitAvailable(WiFiClient& client, int timeout_ms)

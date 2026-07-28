@@ -10,6 +10,7 @@
 static const char CONFIG_HTML[] PROGMEM = R"(
 <html>
     <head>
+        <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>Configure Micro Radar</title>
         <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.0"></script>
@@ -53,7 +54,7 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                         pattern="[0-9]+\.?[0-9]*"
                         value='%MAXRANGE%'
                         class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
-                    <small id="ring-info" style="color:#666; margin-left:4px;">Mid ring ≈ 66%, inner ring ≈ 33% of max range</small>
+                    <small id="ring-info" style="color:#666; margin-left:4px;">Mid ring ~66%, inner ring ~33% of max range</small>
                 </label>
 
                 <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
@@ -126,32 +127,64 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                     </label>
                 </fieldset>
 
-                <div class="flex flex-col sm:flex-row gap-4 sm:justify-between">
+                <fieldset class="border border-green-700 p-3 flex flex-col gap-2">
+                    <legend class="px-2 text-xs">Display Settings</legend>
+                    <div class="flex flex-col sm:flex-row gap-4 sm:gap-6">
+                        <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                            <span>Radar sweep:</span>
+                            <input
+                                name="scanline"
+                                type="checkbox"
+                                %SCANLINE%
+                                class="px-3 sm:px-1 accent-green-500">
+                        </label>
+                        <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                            <span>Aircraft Info:</span>
+                            <input
+                                name="infotext"
+                                type="checkbox"
+                                %INFOTEXT%
+                                class="px-3 sm:px-1 accent-green-500">
+                        </label>
+                        <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                            <span>Directional Aircraft:</span>
+                            <input
+                                name="triangle"
+                                type="checkbox"
+                                %TRIANGLE%
+                                class="px-3 sm:px-1 accent-green-500">
+                        </label>
+                    </div>
+                    <div class="flex flex-col sm:flex-row gap-4 sm:gap-6">
+                        <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                            <span>Aircraft Trails:</span>
+                            <input
+                                name="trails"
+                                type="checkbox"
+                                %TRAILS%
+                                class="px-3 sm:px-1 accent-green-500">
+                            <small style="color:#666;">Dotted path behind aircraft</small>
+                        </label>
+                        <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                            <span>Squawk Alerts:</span>
+                            <input
+                                name="squawkalert"
+                                type="checkbox"
+                                %SQUAWKALERT%
+                                class="px-3 sm:px-1 accent-green-500">
+                            <small style="color:#666;">Flash emergency codes</small>
+                        </label>
+                    </div>
                     <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-                        <span>Radar sweep:</span>
-                        <input
-                            name="scanline"
-                            type="checkbox"
-                            %SCANLINE%
-                            class="px-3 sm:px-1 accent-green-500">
+                        <span>Phosphor Colour:</span>
+                        <select
+                            name="phosphor"
+                            class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
+                            <option value="green"%PHOSPHOR_GREEN%>Green (P1)</option>
+                            <option value="amber"%PHOSPHOR_AMBER%>Amber (P4)</option>
+                        </select>
                     </label>
-                    <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-                        <span>Aircraft Info:</span>
-                        <input
-                            name="infotext"
-                            type="checkbox"
-                            %INFOTEXT%
-                            class="px-3 sm:px-1 accent-green-500">
-                    </label>
-                    <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-                        <span>Directional Aircraft:</span>
-                        <input
-                            name="triangle"
-                            type="checkbox"
-                            %TRIANGLE%
-                            class="px-3 sm:px-1 accent-green-500">
-                    </label>
-                </div>
+                </fieldset>
 
                 <div class="flex flex-col sm:flex-row gap-4 sm:gap-5">
                     <input
@@ -162,6 +195,45 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                         <div id="result" class="mt-4 px-1 sm:px-10"></div>
                 </div>
             </form>
+        </fieldset>
+
+        <fieldset class="border border-green-700 p-5 w-full max-w-2xl mx-auto sm:m-10 mt-4">
+            <legend class="px-2 text-green-400">Display Legend</legend>
+            <div class="flex flex-col gap-3 text-sm">
+                <div class="flex items-center gap-3">
+                    <span style="color:#00FF00;">&gt;</span>
+                    <span>Fixed-wing aircraft (green/amber)</span>
+                </div>
+                <div class="flex items-center gap-3">
+                    <span style="color:#00FF00;">&gt;</span>
+                    <span>Heavy aircraft - larger triangle</span>
+                </div>
+                <div class="flex items-center gap-3">
+                    <span style="color:#00FF00;">X</span>
+                    <span>Helicopter - circle with X</span>
+                </div>
+                <div class="flex items-center gap-3">
+                    <span style="color:#FF8800;">&gt;</span>
+                    <span>Military - orange (squawk 4000-4999, 7000+)</span>
+                </div>
+                <hr style="border-color:#333;">
+                <div class="text-xs" style="color:#888;">
+                    <p class="mb-2"><strong style="color:#aaa;">How aircraft fade:</strong></p>
+                    <p class="mb-1">- Aircraft appear at full brightness when the radar sweep passes over them</p>
+                    <p class="mb-1">- They then gradually dim over ~6 seconds, mimicking CRT phosphor decay</p>
+                    <p class="mb-1">- Fresh data (recent position updates) produces brighter blips</p>
+                    <p class="mb-1">- Stale data fades faster - aircraft with old positions disappear quicker</p>
+                    <p class="mb-1">- When the sweep line touches a target again, it re-illuminates to full brightness</p>
+                </div>
+                <hr style="border-color:#333;">
+                <div class="text-xs" style="color:#888;">
+                    <p class="mb-2"><strong style="color:#aaa;">Squawk alerts:</strong></p>
+                    <p class="mb-1"><span style="color:#FF4444;">7500</span> - Hijack / unlawful interference</p>
+                    <p class="mb-1"><span style="color:#FF4444;">7600</span> - Radio failure</p>
+                    <p class="mb-1"><span style="color:#FF4444;">7700</span> - General emergency</p>
+                    <p class="mb-1"><span style="color:#FF4444;">1200</span> - VFR / general aviation (US)</p>
+                </div>
+            </div>
         </fieldset>
 
         <script>
@@ -192,7 +264,7 @@ static const char CONFIG_HTML[] PROGMEM = R"(
             function updateRingInfo() {
                 const nmOuter = parseFloat(maxRangeInput.value);
                 if (!isFinite(nmOuter) || nmOuter <= 0) {
-                    ringInfo.innerHTML = 'Outer = max range. Mid ≈ 66%. Inner ≈ 33%';
+                    ringInfo.innerHTML = 'Outer = max range. Mid ~66%. Inner ~33%';
                     return;
                 }
 
@@ -226,10 +298,6 @@ static const char CONFIG_HTML[] PROGMEM = R"(
 
 #if defined(ARDUINO_ARCH_ESP32)
 
-// ──────────────────────────────────────────────
-// ESP32: AsyncWebServer (template processor)
-// ──────────────────────────────────────────────
-
 void ConfigurationWebServer::Initialise() {
     if (!MDNS.begin("microradar")) {
         Serial.println("[WARN] Failed to start mDNS. Continuing without mDNS...");
@@ -251,6 +319,9 @@ void ConfigurationWebServer::Initialise() {
         const String scanlineEnabled = prefs.getString("scanline", "true");
         const String infoTextEnabled = prefs.getString("infotext", "true");
         const String triangleEnabled = prefs.getString("triangle", "true");
+        const String trailsEnabled = prefs.getString("trails", "false");
+        const String squawkAlertEnabled = prefs.getString("squawkalert", "false");
+        const String phosphor = prefs.getString("phosphor", "green");
         const String dataSource = prefs.getString("datasource", "opensky");
         const String readsbHost = prefs.getString("readsbhost", "");
         const String readsbPort = prefs.getString("readsbport", "8080");
@@ -261,11 +332,13 @@ void ConfigurationWebServer::Initialise() {
 
         const String dsOpenSky = dataSource == "opensky" ? "selected" : "";
         const String dsLocal = dataSource == "local" ? "selected" : "";
+        const String phosphorGreen = phosphor == "green" ? "selected" : "";
+        const String phosphorAmber = phosphor == "amber" ? "selected" : "";
 
         AsyncWebServerResponse* response = request->beginResponse(
             200, "text/html",
             (const uint8_t*)CONFIG_HTML, sizeof(CONFIG_HTML) - 1,
-            [latitude, longitude, maxRangeNm, openskyClientId, openskySecret, scanlineEnabled, infoTextEnabled, triangleEnabled, dsOpenSky, dsLocal, readsbHost, readsbPort, fetchInterval]
+            [latitude, longitude, maxRangeNm, openskyClientId, openskySecret, scanlineEnabled, infoTextEnabled, triangleEnabled, trailsEnabled, squawkAlertEnabled, phosphorGreen, phosphorAmber, dsOpenSky, dsLocal, readsbHost, readsbPort, fetchInterval]
             (const String& var) -> String {
                 if (var == "LATITUDE")       return latitude;
                 if (var == "LONGITUDE")      return longitude;
@@ -275,6 +348,10 @@ void ConfigurationWebServer::Initialise() {
                 if (var == "SCANLINE")       return scanlineEnabled == "true" ? "checked" : "";
                 if (var == "INFOTEXT")       return infoTextEnabled == "true" ? "checked" : "";
                 if (var == "TRIANGLE")       return triangleEnabled == "true" ? "checked" : "";
+                if (var == "TRAILS")         return trailsEnabled == "true" ? "checked" : "";
+                if (var == "SQUAWKALERT")    return squawkAlertEnabled == "true" ? "checked" : "";
+                if (var == "PHOSPHOR_GREEN") return phosphorGreen;
+                if (var == "PHOSPHOR_AMBER") return phosphorAmber;
                 if (var == "DS_OPENSKY")     return dsOpenSky;
                 if (var == "DS_LOCAL")       return dsLocal;
                 if (var == "READSBHOST")     return readsbHost;
@@ -309,6 +386,7 @@ void ConfigurationWebServer::Initialise() {
         TrySaveParam("readsbport");
         TrySaveParam("readsbpath");
         TrySaveParam("fetchinterval");
+        TrySaveParam("phosphor");
 
         const auto* maxRangeParam = request->getParam("maxrange", true);
         if (maxRangeParam != nullptr) {
@@ -329,6 +407,8 @@ void ConfigurationWebServer::Initialise() {
         prefs.putString("scanline", request->hasParam("scanline", true) ? "true" : "false");
         prefs.putString("triangle", request->hasParam("triangle", true) ? "true" : "false");
         prefs.putString("infotext", request->hasParam("infotext", true) ? "true" : "false");
+        prefs.putString("trails", request->hasParam("trails", true) ? "true" : "false");
+        prefs.putString("squawkalert", request->hasParam("squawkalert", true) ? "true" : "false");
         prefs.end();
 
         request->send(200, "text/html", "Saved - restarting device...");
@@ -339,10 +419,6 @@ void ConfigurationWebServer::Initialise() {
 }
 
 #elif defined(ARDUINO_ARCH_ESP8266)
-
-// ──────────────────────────────────────────────
-// ESP8266: ESP8266WebServer (synchronous, stream-based)
-// ──────────────────────────────────────────────
 
 static inline void substitutePlaceholders(String& templateStr, const String& key, const String& value)
 {
@@ -365,6 +441,9 @@ void ConfigurationWebServer::HandleRoot() {
     String scanlineEnabled = prefs.getString("scanline", "true");
     String infoTextEnabled = prefs.getString("infotext", "true");
     String triangleEnabled = prefs.getString("triangle", "true");
+    String trailsEnabled = prefs.getString("trails", "false");
+    String squawkAlertEnabled = prefs.getString("squawkalert", "false");
+    String phosphor = prefs.getString("phosphor", "green");
     String dataSource = prefs.getString("datasource", "opensky");
     String readsbHost = prefs.getString("readsbhost", "");
     String readsbPort = prefs.getString("readsbport", "8080");
@@ -393,6 +472,10 @@ void ConfigurationWebServer::HandleRoot() {
     substitutePlaceholders(html, "%SCANLINE%", scanlineEnabled == "true" ? "checked" : "");
     substitutePlaceholders(html, "%INFOTEXT%", infoTextEnabled == "true" ? "checked" : "");
     substitutePlaceholders(html, "%TRIANGLE%", triangleEnabled == "true" ? "checked" : "");
+    substitutePlaceholders(html, "%TRAILS%", trailsEnabled == "true" ? "checked" : "");
+    substitutePlaceholders(html, "%SQUAWKALERT%", squawkAlertEnabled == "true" ? "checked" : "");
+    substitutePlaceholders(html, "%PHOSPHOR_GREEN%", phosphor == "green" ? "selected" : "");
+    substitutePlaceholders(html, "%PHOSPHOR_AMBER%", phosphor == "amber" ? "selected" : "");
     substitutePlaceholders(html, "%DS_OPENSKY%", dataSource == "opensky" ? "selected" : "");
     substitutePlaceholders(html, "%DS_LOCAL%", dataSource == "local" ? "selected" : "");
     substitutePlaceholders(html, "%READSBHOST%", readsbHost);
@@ -406,7 +489,6 @@ void ConfigurationWebServer::HandleRoot() {
 void ConfigurationWebServer::HandleSave() {
     Serial.println("[POST] Handling form submission to config web server...");
 
-    // Debug: dump all received args
     Serial.printf("[POST] Total args: %d\n", server.args());
     for (uint8_t i = 0; i < server.args(); i++) {
         Serial.printf("[POST]   %s = %s\n", server.argName(i).c_str(), server.arg(i).c_str());
@@ -433,6 +515,7 @@ void ConfigurationWebServer::HandleSave() {
     TrySaveParam("readsbport");
     TrySaveParam("readsbpath");
     TrySaveParam("fetchinterval");
+    TrySaveParam("phosphor");
 
     if (server.hasArg("maxrange")) {
         float maxRangeNm = server.arg("maxrange").toFloat();
@@ -451,10 +534,11 @@ void ConfigurationWebServer::HandleSave() {
     prefs.putString("scanline", server.hasArg("scanline") ? "true" : "false");
     prefs.putString("triangle", server.hasArg("triangle") ? "true" : "false");
     prefs.putString("infotext", server.hasArg("infotext") ? "true" : "false");
+    prefs.putString("trails", server.hasArg("trails") ? "true" : "false");
+    prefs.putString("squawkalert", server.hasArg("squawkalert") ? "true" : "false");
     prefs.end();
 
     Serial.println("[POST] EEPROM committed. Verifying write...");
-    // Quick verification read
     prefs.begin("config", true);
     String verifyLat = prefs.getString("latitude", "EMPTY");
     String verifyLon = prefs.getString("longitude", "EMPTY");
@@ -462,7 +546,7 @@ void ConfigurationWebServer::HandleSave() {
     Serial.printf("[POST] Verify: lat='%s', lon='%s'\n", verifyLat.c_str(), verifyLon.c_str());
 
     server.send(200, "text/html", "Saved - restarting device...");
-    delay(1000); // Increase delay to ensure EEPROM flash write completes
+    delay(1000);
     ESP.restart();
 }
 
@@ -473,7 +557,6 @@ void ConfigurationWebServer::Initialise() {
 
     server.on("/", std::bind(&ConfigurationWebServer::HandleRoot, this));
     server.on("/save", std::bind(&ConfigurationWebServer::HandleSave, this));
-
 
     server.begin();
     Serial.println("[INFO] Config server listening on port 80");

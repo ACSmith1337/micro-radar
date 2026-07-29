@@ -58,6 +58,9 @@ enum class AircraftType {
 struct HttpManager;
 struct ConfigWebServer;
 
+// ─── Scan modes ───
+enum class ScanMode { ANGULAR, RADIAL };
+
 // ─── Aircraft manager: fetches, tracks, and renders aircraft on screen ───
 class AircraftManager {
 public:
@@ -66,6 +69,11 @@ public:
 
     void Initialise();
     void Update();
+    void ReloadDisplayConfig();  // Live theme/mode reload without restart
+    void ApplyThemeChange(bool amber);  // Direct theme toggle (no EEPROM read)
+    void ApplyModeChange(bool radial);  // Direct mode toggle (no EEPROM read)
+    bool IsAmber() const;
+    bool IsRadial() const;
 
 #if defined(ARDUINO_ARCH_ESP8266)
     void Draw(LGFX& buf);
@@ -102,7 +110,9 @@ private:
 
     // Drawing
     void DrawRadarGrid() const;
+    void DrawRadarLabels() const;
     void DrawRadarFrame();
+    void DrawRadarPing(int cx, int cy, int r);
     void DrawTrail(int cx, int cy, int r, float headC, float headS);
     bool RefreshAircraft();
     void DecayAircraft();

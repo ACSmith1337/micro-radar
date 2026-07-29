@@ -9,9 +9,12 @@ An authentic PPI-style radar display for ADS-B data using an ESP8266 and GC9A01 
 - Smooth aircraft interpolation between data updates
 - Color-coded aircraft (green/gold for commercial, orange for military)
 - Emergency squawk code alerts (7500, 7600, 7700) with flashing red overlay
-- Two phosphor color schemes: green (P1) and gold (P4) — toggleable via web UI
+- Two phosphor color schemes: green (P1) and gold (P4) — toggleable via web UI or button
+- **Two scan modes:** Angular Sweep (rotating beam) and Radial Ping (expanding sonar ring) — toggleable via web UI or button
 - Aircraft trail dots showing track history behind moving targets
 - Variable fade rates — strong signals persist longer than weak ones
+- Live config reload — web UI changes apply instantly, no reboot required
+- Physical button support for quick theme and scan mode toggling
 - Configurable via web interface
 - Compatible with readsb/dump1090 aircraft.json feeds
 
@@ -19,6 +22,7 @@ An authentic PPI-style radar display for ADS-B data using an ESP8266 and GC9A01 
 - ESP8266 NodeMCU (D1 Mini recommended)
 - GC9A01 240x240 round TFT display
 - [Round Mineral Glass Lens](https://www.aliexpress.com/item/1005002647300988.html) for authentic radar appearance
+- Two momentary push buttons (optional)
 - Micro USB cable for power
 
 ## Installation
@@ -70,25 +74,40 @@ After flashing, the device will create a WiFi access point named "MicroRadar-Set
 - Radar location coordinates
 - Display settings (scan line, triangles, info text, trails, squawk alerts)
 - Phosphor color scheme (green P1 or gold P4)
+- Scan mode (Angular Sweep or Radial Ping)
 
-## Assembly Instructions
-1. Connect the GC9A01 display to the ESP8266:
-   ```
-   Display Pin | ESP8266 Pin
-   -----------|------------
-   VCC        | 3.3V
-   GND        | GND
-   SCL        | D5 (GPIO14)
-   SDA        | D7 (GPIO13)
-   DC         | D2 (GPIO4)
-   CS         | D8 (GPIO15)
-   RST        | D3 (GPIO0)
-   BL         | D1 (GPIO5)
-   ```
+## Physical Buttons (Optional)
+Wire two momentary push buttons to toggle settings without the web UI:
 
-2. Place the Round Mineral Glass Lens over the display for authentic appearance
+| Button | Pin | GPIO | Function |
+|--------|-----|------|----------|
+| Button 1 | D6 | GPIO12 | Toggle theme (Green ↔ Amber) |
+| Button 2 | D4 | GPIO2 | Toggle scan mode (Angular ↔ Radial) |
 
-3. Mount in an appropriate enclosure with antenna placement consideration
+Buttons connect between their GPIO pin and GND. Internal pull-ups are enabled.
+
+## Wiring
+Connect the GC9A01 display to the ESP8266:
+```
+Display Pin | ESP8266 Pin
+-----------|------------
+VCC        | 3.3V
+GND        | GND
+SCL        | D5 (GPIO14)
+SDA        | D7 (GPIO13)
+DC         | D2 (GPIO4)
+CS         | D8 (GPIO15)
+RST        | D3 (GPIO0)
+BL         | D1 (GPIO5)
+```
+
+## Scan Modes
+
+### Angular Sweep (Default)
+A rotating beam sweeps clockwise around the display. Aircraft illuminate to full brightness when the beam passes over them, then gradually fade — mimicking a real PPI radar.
+
+### Radial Ping
+An expanding ring grows from the center outward, illuminating aircraft as it crosses their position. After reaching the edge, the screen clears and pauses before the next ping.
 
 ## Troubleshooting
 - If the display remains blank, check wiring connections

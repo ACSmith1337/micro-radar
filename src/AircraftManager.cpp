@@ -39,7 +39,7 @@ constexpr uint32_t WARMUP_MS         = 10000;        // startup warm-up screen
 constexpr int      MAX_AIRCRAFT      = 24;           // draw/load protection
 constexpr int      MAX_RESP_BYTES    = 8192;         // heap protection
 constexpr float    SCAN_SPEED        = (6.2831853f / ROTATION_MS);
-constexpr uint8_t  AIRCRAFT_ERASE_RADIUS = 14;
+constexpr uint8_t  AIRCRAFT_ERASE_RADIUS = 18;  // Cover icon + glow + trail dots
 constexpr uint8_t  BRIGHTNESS_MAX    = 24;
 // Variable fade: strong signals last ~9.5s (24 steps * 350ms * 1.12), weak ~5.5s (24 steps * 350ms * 0.66)
 // Decay step = 1 for strong (quality > 0.5), 2 for weak (quality <= 0.5)
@@ -88,6 +88,15 @@ struct ScanState {
 
 static ScanState scanState;
 static bool useAmber = false;  // Phosphor colour palette
+static ScanMode currentMode = ScanMode::ANGULAR;
+
+// ─── Radial ping state ───
+static uint8_t pingRadius = 0;
+static uint8_t pingPhase = 0;  // 0=expand, 1=pause
+static uint32_t pingLastTime = 0;
+constexpr uint32_t PING_EXPAND_MS = 2500;  // ~2.5s expand
+constexpr uint32_t PING_PAUSE_MS = 3000;   // ~3s pause
+constexpr uint8_t PING_MAX_RADIUS = 160;   // Off-screen (240x240 display)
 
 // ─── Incremental trig ───
 static inline void RotateAngle(float &c, float &s, float delta)
@@ -156,7 +165,7 @@ static bool IsAlertSquawk(const SimpleAircraft& ac)
 {
     if (ac.squawk.isEmpty()) return false;
     int sq = ac.squawk.toInt();
-    return (sq == 7500 || sq == 7600 || sq == 7700);
+    return (sq == 7500 || sq == 7600 || sq == 7700 || sq == 1200);
 }
 
 static TargetGlyph GetTargetGlyph(const SimpleAircraft& ac)
@@ -253,6 +262,88 @@ void AircraftManager::Initialise()
     tft.drawCentreString("SYNC READSB...", 120, 112, 1);
 }
 
+// ── Live config reload (no restart) ──
+void AircraftManager::ReloadDisplayConfig()
+{
+    bool newAmber = configServer.GetStoredString("phosphor") == "amber";
+    if (newAmber != useAmber) {
+        useAmber = newAmber;
+        Serial.printf("[RADAR] Theme changed to %s\n", useAmber ? "amber" : "green");
+    }
+
+    String newMode = configServer.GetStoredString("scanmode");
+    if (newMode.isEmpty()) newMode = "angular";
+    bool newRadial = newMode == "radial";
+    if (newRadial && currentMode != ScanMode::RADIAL) {
+        currentMode = ScanMode::RADIAL;
+        pingRadius = 0;
+        pingPhase = 0;
+        pingLastTime = millis();
+        Serial.println("[RADAR] Scan mode: radial ping");
+    } else if (!newRadial && currentMode != ScanMode::ANGULAR) {
+        currentMode = ScanMode::ANGULAR;
+        scanState = {0.0f, 1.0f, 0.0f};
+        Serial.println("[RADAR] Scan mode: angular sweep");
+    }
+
+    // Redraw grid with new palette
+    tft.fillScreen(CLR_BG);
+    DrawRadarGrid();
+    DrawRadarLabels();
+}
+
+// ── Apply single setting change (avoids EEPROM re-read race) ──
+void AircraftManager::ApplyThemeChange(bool amber)
+{
+    if (amber != useAmber) {
+        useAmber = amber;
+        Serial.printf("[RADAR] Theme: %s\n", useAmber ? "amber" : "green");
+    }
+    tft.fillScreen(CLR_BG);
+    DrawRadarGrid();
+    DrawRadarLabels();
+}
+
+void AircraftManager::ApplyModeChange(bool radial)
+{
+    if (radial && currentMode != ScanMode::RADIAL) {
+        currentMode = ScanMode::RADIAL;
+        pingRadius = 0;
+        pingPhase = 0;
+        pingLastTime = millis();
+        Serial.println("[RADAR] Scan mode: radial ping");
+    } else if (!radial && currentMode != ScanMode::ANGULAR) {
+        currentMode = ScanMode::ANGULAR;
+        scanState = {0.0f, 1.0f, 0.0f};
+        Serial.println("[RADAR] Scan mode: angular sweep");
+    }
+    tft.fillScreen(CLR_BG);
+    DrawRadarGrid();
+    DrawRadarLabels();
+}
+
+// ── Common label drawing ──
+void AircraftManager::DrawRadarLabels() const
+{
+    const int cx = 120, cy = 120;
+    tft.setTextColor(PalRingBright(useAmber));
+    tft.setTextSize(1);
+    tft.drawCentreString("N", cx, 2, 1);
+    tft.drawCentreString("N", cx + 1, 2, 1);
+    tft.drawCentreString("S", cx, 228, 1);
+    tft.drawCentreString("S", cx + 1, 228, 1);
+    tft.drawCentreString("E", 236, cy - 3, 1);
+    tft.drawCentreString("E", 237, cy - 3, 1);
+    tft.drawCentreString("W", 4, cy - 3, 1);
+    tft.drawCentreString("W", 5, cy - 3, 1);
+    tft.drawString(ringLabelOuter, cx + 6, cy - RING_OUTER_PX + 4, 1);
+    tft.drawString(ringLabelMid,   cx + 6, cy - RING_MID_PX   + 4, 1);
+    tft.drawString(ringLabelInner, cx + 6, cy - RING_INNER_PX + 4, 1);
+}
+
+bool AircraftManager::IsAmber() const { return useAmber; }
+bool AircraftManager::IsRadial() const { return currentMode == ScanMode::RADIAL; }
+
 void AircraftManager::Update()
 {
     static uint32_t lastRotation = 0;
@@ -305,10 +396,17 @@ void AircraftManager::Update()
         return;
     }
 
-    // ── Fetch once per rotation ──
-    if (lastRotation == 0 || (millis() - lastRotation) >= fetchInterval) {
+    // ── Fetch once per rotation (or more often after failures) ──
+    if (millis() - lastRotation >= fetchInterval) {
         lastRotation = millis();
-        RefreshAircraft();
+        if (!RefreshAircraft()) {
+            // Fetch failed - retry immediately, then fetch more often next cycle
+            delay(500);
+            RefreshAircraft();
+            fetchInterval = 5000;  // Fetch every 5s until success
+        } else {
+            fetchInterval = FETCH_DEFAULT;  // Back to normal 10s
+        }
     }
 
     // ── Scan animation ──
@@ -392,7 +490,7 @@ void AircraftManager::DecayAircraft()
         else lp.brightness -= step;
 
         if (lp.brightness == 0) {
-            ErasePosition(lp.x, lp.y, 10);
+            ErasePosition(lp.x, lp.y, AIRCRAFT_ERASE_RADIUS);
             faded.push_back(icao);
         } else {
             if (trackedAircraft.count(icao)) {
@@ -415,6 +513,12 @@ void AircraftManager::DrawRadarFrame()
 
     const int cx = 120, cy = 120;
     const int r = 119;
+
+    // ── Mode switch: angular sweep vs radial ping ──
+    if (currentMode == ScanMode::RADIAL) {
+        DrawRadarPing(cx, cy, r);
+        return;
+    }
 
     // ── Advance scan angle ──
     constexpr float DEG1 = 0.0174533f;
@@ -494,7 +598,8 @@ void AircraftManager::DrawRadarFrame()
         int ny = proj.second;
         bool on = (nx > 0 && nx < 239 && ny > 0 && ny < 239);
 
-        if (lp.visible && (!on || abs(nx - lp.x) > 1 || abs(ny - lp.y) > 1)) {
+        // Erase old position if aircraft moved (even by 1 pixel)
+        if (lp.visible && (!on || nx != lp.x || ny != lp.y)) {
             ErasePosition(lp.x, lp.y, AIRCRAFT_ERASE_RADIUS);
         }
 
@@ -536,15 +641,12 @@ void AircraftManager::DrawRadarFrame()
         }
     }
 
-    // ── Redraw aircraft blips at reduced rate ──
-    static uint8_t blipDiv = 0;
-    if ((++blipDiv % 3) == 0) {
-        for (const auto& [icao, lp] : lastPositions) {
-            if (!lp.visible || lp.brightness == 0) continue;
-            auto it = trackedAircraft.find(icao);
-            if (it == trackedAircraft.end()) continue;
-            DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness);
-        }
+    // ── Redraw aircraft blips every frame (prevents ghost trails) ──
+    for (const auto& [icao, lp] : lastPositions) {
+        if (!lp.visible || lp.brightness == 0) continue;
+        auto it = trackedAircraft.find(icao);
+        if (it == trackedAircraft.end()) continue;
+        DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness);
     }
 
     // ── Squawk alert: flash emergency squawk text ──
@@ -606,8 +708,84 @@ void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
             cx + (int)(prevC * r), cy - (int)(prevS * r),
             cx + (int)(segC * r),  cy - (int)(segS * r),
             color);
-        prevC = segC;
-        prevS = segS;
+        prevC = segC; prevS = segS;
+    }
+}
+
+// ── Radial ping (sonar mode) ──
+void AircraftManager::DrawRadarPing(int cx, int cy, int r)
+{
+    (void)r;
+    uint32_t now = millis();
+    if (pingLastTime == 0) pingLastTime = now;
+
+    uint32_t elapsed = now - pingLastTime;
+
+    // Track previous ring radius to erase it (no full screen clear)
+    static uint8_t prevRadius = 255;
+
+    switch (pingPhase) {
+        case 0: { // EXPAND: ring grows from center off screen
+            float progress = (float)elapsed / (float)PING_EXPAND_MS;
+            if (progress > 1.0f) progress = 1.0f;
+            pingRadius = (uint8_t)(progress * PING_MAX_RADIUS);
+
+            // Hit detection: illuminate aircraft when ring crosses their distance
+            for (auto& [icao, lp] : lastPositions) {
+                if (!lp.visible) continue;
+                if (!trackedAircraft.count(icao)) continue;
+                int vx = lp.x - cx;
+                int vy = cy - lp.y;
+                float dist = sqrtf((float)(vx * vx + vy * vy));
+                if (dist > 0 && abs((int)dist - pingRadius) <= 3) {
+                    lp.brightness = BRIGHTNESS_MAX;
+                }
+            }
+
+            if (elapsed >= PING_EXPAND_MS) {
+                pingPhase = 1;
+                pingLastTime = now;
+            }
+            break;
+        }
+        case 1: { // PAUSE: blank grid, waiting for next ping
+            if (elapsed >= PING_PAUSE_MS) {
+                pingPhase = 0;
+                pingRadius = 0;
+                pingLastTime = now;
+            }
+            break;
+        }
+    }
+
+    // ── Draw: erase previous ring, then draw grid + labels + ring ──
+    if (prevRadius > 0 && prevRadius <= PING_MAX_RADIUS + 2) {
+        tft.drawCircle(cx, cy, prevRadius, CLR_BG);
+        tft.drawCircle(cx, cy, prevRadius + 1, CLR_BG);
+        tft.drawCircle(cx, cy, prevRadius + 2, CLR_BG);
+    }
+
+    // Redraw grid + labels every frame so ring erase doesn't corrupt them
+    DrawRadarGrid();
+    DrawRadarLabels();
+
+    // ── Draw single ring at current radius (3px thick, no persistence) ──
+    if (pingPhase == 0 && pingRadius > 0) {
+        uint16_t ringColor = PalScan(useAmber);
+        tft.drawCircle(cx, cy, pingRadius, ringColor);
+        tft.drawCircle(cx, cy, pingRadius + 1, ringColor);
+        tft.drawCircle(cx, cy, pingRadius + 2, ringColor);
+        prevRadius = pingRadius;
+    } else {
+        prevRadius = 255;
+    }
+
+    // ── Draw aircraft blips ──
+    for (const auto& [icao, lp] : lastPositions) {
+        if (!lp.visible || lp.brightness == 0) continue;
+        auto it = trackedAircraft.find(icao);
+        if (it == trackedAircraft.end()) continue;
+        DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness);
     }
 }
 

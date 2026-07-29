@@ -184,6 +184,15 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                             <option value="amber"%PHOSPHOR_AMBER%>Amber (P4)</option>
                         </select>
                     </label>
+                    <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                        <span>Scan Mode:</span>
+                        <select
+                            name="scanmode"
+                            class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
+                            <option value="angular"%SCANMODE_ANGULAR%>Angular Sweep</option>
+                            <option value="radial"%SCANMODE_RADIAL%>Radial Ping</option>
+                        </select>
+                    </label>
                 </fieldset>
 
                 <div class="flex flex-col sm:flex-row gap-4 sm:gap-5">
@@ -326,6 +335,7 @@ void ConfigurationWebServer::Initialise() {
         const String readsbHost = prefs.getString("readsbhost", "");
         const String readsbPort = prefs.getString("readsbport", "8080");
         const String fetchInterval = prefs.getString("fetchinterval", "3");
+        const String scanMode = prefs.getString("scanmode", "angular");
         prefs.end();
 
         std::fill(openskySecret.begin(), openskySecret.end(), '*');
@@ -334,11 +344,13 @@ void ConfigurationWebServer::Initialise() {
         const String dsLocal = dataSource == "local" ? "selected" : "";
         const String phosphorGreen = phosphor == "green" ? "selected" : "";
         const String phosphorAmber = phosphor == "amber" ? "selected" : "";
+        const String scanModeAngular = scanMode == "angular" ? "selected" : "";
+        const String scanModeRadial = scanMode == "radial" ? "selected" : "";
 
         AsyncWebServerResponse* response = request->beginResponse(
             200, "text/html",
             (const uint8_t*)CONFIG_HTML, sizeof(CONFIG_HTML) - 1,
-            [latitude, longitude, maxRangeNm, openskyClientId, openskySecret, scanlineEnabled, infoTextEnabled, triangleEnabled, trailsEnabled, squawkAlertEnabled, phosphorGreen, phosphorAmber, dsOpenSky, dsLocal, readsbHost, readsbPort, fetchInterval]
+            [latitude, longitude, maxRangeNm, openskyClientId, openskySecret, scanlineEnabled, infoTextEnabled, triangleEnabled, trailsEnabled, squawkAlertEnabled, phosphorGreen, phosphorAmber, dsOpenSky, dsLocal, readsbHost, readsbPort, fetchInterval, scanModeAngular, scanModeRadial]
             (const String& var) -> String {
                 if (var == "LATITUDE")       return latitude;
                 if (var == "LONGITUDE")      return longitude;
@@ -357,6 +369,8 @@ void ConfigurationWebServer::Initialise() {
                 if (var == "READSBHOST")     return readsbHost;
                 if (var == "READSBPORT")     return readsbPort;
                 if (var == "FETCHINTERVAL")  return fetchInterval;
+                if (var == "SCANMODE_ANGULAR") return scanModeAngular;
+                if (var == "SCANMODE_RADIAL")  return scanModeRadial;
                 return "";
             }
         );
@@ -387,6 +401,7 @@ void ConfigurationWebServer::Initialise() {
         TrySaveParam("readsbpath");
         TrySaveParam("fetchinterval");
         TrySaveParam("phosphor");
+        TrySaveParam("scanmode");
 
         const auto* maxRangeParam = request->getParam("maxrange", true);
         if (maxRangeParam != nullptr) {
@@ -449,6 +464,7 @@ void ConfigurationWebServer::HandleRoot() {
     String readsbPort = prefs.getString("readsbport", "8080");
     String readsbPath = prefs.getString("readsbpath", "/data/aircraft.json");
     String fetchInterval = prefs.getString("fetchinterval", "3");
+    String scanMode = prefs.getString("scanmode", "angular");
     prefs.end();
 
     std::fill(openskySecret.begin(), openskySecret.end(), '*');
@@ -482,6 +498,8 @@ void ConfigurationWebServer::HandleRoot() {
     substitutePlaceholders(html, "%READSBPORT%", readsbPort);
     substitutePlaceholders(html, "%READSBPATH%", readsbPath);
     substitutePlaceholders(html, "%FETCHINTERVAL%", fetchInterval);
+    substitutePlaceholders(html, "%SCANMODE_ANGULAR%", scanMode == "angular" ? "selected" : "");
+    substitutePlaceholders(html, "%SCANMODE_RADIAL%", scanMode == "radial" ? "selected" : "");
 
     server.send(200, "text/html", html);
 }
@@ -516,6 +534,7 @@ void ConfigurationWebServer::HandleSave() {
     TrySaveParam("readsbpath");
     TrySaveParam("fetchinterval");
     TrySaveParam("phosphor");
+    TrySaveParam("scanmode");
 
     if (server.hasArg("maxrange")) {
         float maxRangeNm = server.arg("maxrange").toFloat();
@@ -545,9 +564,12 @@ void ConfigurationWebServer::HandleSave() {
     prefs.end();
     Serial.printf("[POST] Verify: lat='%s', lon='%s'\n", verifyLat.c_str(), verifyLon.c_str());
 
-    server.send(200, "text/html", "Saved - restarting device...");
-    delay(1000);
-    ESP.restart();
+    server.send(200, "text/html", "Saved — changes applied live.");
+    reloadRequested = true;
+}
+
+void ConfigurationWebServer::RequestReload() {
+    reloadRequested = true;
 }
 
 void ConfigurationWebServer::Initialise() {

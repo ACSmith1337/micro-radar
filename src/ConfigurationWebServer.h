@@ -17,6 +17,7 @@ public:
     void Initialise();
     void HandleClient() {} // No-op for AsyncWebServer
     [[nodiscard]] const String GetStoredString(const char* key);
+    void RequestReload();
 };
 
 #elif defined(ARDUINO_ARCH_ESP8266)
@@ -28,10 +29,10 @@ class ConfigurationWebServer {
 private:
     ESP8266WebServer server;
     Preferences prefs;
+    bool reloadRequested = false;
 
     void HandleRoot();
     void HandleSave();
-
 
 public:
     ConfigurationWebServer() : server(80), prefs() {}
@@ -39,5 +40,7 @@ public:
     void Initialise();
     void HandleClient();
     [[nodiscard]] const String GetStoredString(const char* key);
+    void RequestReload();
+    bool HasReloadRequested() { bool r = reloadRequested; reloadRequested = false; return r; }
 };
 #endif

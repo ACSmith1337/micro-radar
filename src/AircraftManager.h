@@ -39,12 +39,26 @@ struct InterpPosition {
     bool hasPrev = false;
 };
 
-// ─── Drawing state per aircraft ───
+// ─── Drawing state per aircraft ──
 struct DrawPosition {
     int x;
     int y;
     bool visible;
     uint8_t brightness = 24;  // PPI persistence: 24=max, decays to 0
+};
+
+// ─── Trail history: ring buffer of past positions ──
+constexpr int TRAIL_HISTORY_MAX = 120;  // ~20 min at 10s fetch = 120 points
+struct TrailPoint {
+    int x;
+    int y;
+    uint32_t timestamp;  // millis() when recorded
+};
+
+struct TrailHistory {
+    TrailPoint points[TRAIL_HISTORY_MAX];
+    int count = 0;
+    int head = 0;  // next write position
 };
 
 // ─── Aircraft classification ───
@@ -107,6 +121,7 @@ private:
     std::map<String, SimpleAircraft> trackedAircraft;
     std::map<String, InterpPosition> prevPositions;
     std::map<String, DrawPosition> lastPositions;
+    std::map<String, TrailHistory> trailHistories;  // per-aircraft position history
 
     // Drawing
     void DrawRadarGrid() const;

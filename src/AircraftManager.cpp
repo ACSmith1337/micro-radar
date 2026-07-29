@@ -36,7 +36,7 @@ constexpr uint32_t ROTATION_MS       = 10000;        // 1 full sweep = 10s (conf
 constexpr uint32_t FETCH_DEFAULT     = ROTATION_MS;  // fetch at each rotation
 constexpr uint32_t DECAY_INTERVAL_MS = 350;          // decay tick rate
 constexpr uint32_t WARMUP_MS         = 10000;        // startup warm-up screen
-constexpr int      MAX_AIRCRAFT      = 24;           // draw/load protection
+constexpr int      MAX_AIRCRAFT      = 48;           // draw/load protection
 constexpr int      MAX_RESP_BYTES    = 8192;         // heap protection
 constexpr float    SCAN_SPEED        = (6.2831853f / ROTATION_MS);
 constexpr uint8_t  AIRCRAFT_ERASE_RADIUS = 18;  // Cover icon + glow + trail dots
@@ -265,12 +265,27 @@ void AircraftManager::Initialise()
 // ── Live config reload (no restart) ──
 void AircraftManager::ReloadDisplayConfig()
 {
+    // ── Reload range (affects ring labels + aircraft filtering) ──
+    String newMaxRangeNmStr = configServer.GetStoredString("maxrange");
+    if (!newMaxRangeNmStr.isEmpty()) {
+        rad = newMaxRangeNmStr.toFloat() / 60.0f;
+    } else {
+        rad = configServer.GetStoredString("radius").toFloat();
+    }
+    const float outerNm = rad * 60.0f;
+    ringLabelInner = FormatRangeNm(outerNm * ((float)RING_INNER_PX / (float)RING_OUTER_PX));
+    ringLabelMid   = FormatRangeNm(outerNm * ((float)RING_MID_PX   / (float)RING_OUTER_PX));
+    ringLabelOuter = FormatRangeNm(outerNm);
+    Serial.printf("[RADAR] Range updated: %.1f NM outer\n", outerNm);
+
+    // ── Reload theme ──
     bool newAmber = configServer.GetStoredString("phosphor") == "amber";
     if (newAmber != useAmber) {
         useAmber = newAmber;
         Serial.printf("[RADAR] Theme changed to %s\n", useAmber ? "amber" : "green");
     }
 
+    // ── Reload scan mode ──
     String newMode = configServer.GetStoredString("scanmode");
     if (newMode.isEmpty()) newMode = "angular";
     bool newRadial = newMode == "radial";
@@ -286,7 +301,14 @@ void AircraftManager::ReloadDisplayConfig()
         Serial.println("[RADAR] Scan mode: angular sweep");
     }
 
-    // Redraw grid with new palette
+    // ── Reload display toggles ──
+    displayInfoText = configServer.GetStoredString("infotext") == "true";
+    displayTriangles = configServer.GetStoredString("triangle") == "true";
+    displayScanLine = configServer.GetStoredString("scanline") != "false";
+    displayTrailDots = configServer.GetStoredString("trails") == "true";
+    alertSquawk = configServer.GetStoredString("squawkalert") == "true";
+
+    // ── Redraw everything with new config ──
     tft.fillScreen(CLR_BG);
     DrawRadarGrid();
     DrawRadarLabels();
@@ -442,6 +464,7 @@ bool AircraftManager::RefreshAircraft()
         if (!trackedAircraft.count(icao)) {
             if (lp.visible) ErasePosition(lp.x, lp.y, AIRCRAFT_ERASE_RADIUS);
             gone.push_back(icao);
+            trailHistories.erase(icao);  // Clean up trail history for gone aircraft
         }
     }
     for (auto& icao : gone) lastPositions.erase(icao);
@@ -450,6 +473,16 @@ bool AircraftManager::RefreshAircraft()
         auto proj = ProjectCoordinateToScreen(ac.lat, ac.lon);
         int x = proj.first, y = proj.second;
         bool on = (x > 0 && x < 239 && y > 0 && y < 239);
+
+        // ── Record trail history ──
+        if (on && displayTrailDots) {
+            auto& hist = trailHistories[icao];
+            hist.points[hist.head].x = x;
+            hist.points[hist.head].y = y;
+            hist.points[hist.head].timestamp = millis();
+            hist.head = (hist.head + 1) % TRAIL_HISTORY_MAX;
+            if (hist.count < TRAIL_HISTORY_MAX) hist.count++;
+        }
 
         if (on) {
             if (lastPositions.count(icao) && lastPositions[icao].visible) {
@@ -883,37 +916,28 @@ void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, u
 
     float hRad = ac.heading * 0.0174533f;
 
-    // ── Trail dots (dotted path behind aircraft) ──
+    // ── Trail dots (persistent position history) ──
     // Draw BEFORE glow and icon so they sit underneath
-    if (displayTrailDots && ac.groundspeed > 5.0f && effective > BRIGHTNESS_MAX * 0.1f) {
-        float outerNm = rad * 60.0f;
-        if (outerNm < 0.5f) outerNm = 0.5f;
-        float trailNm = ac.groundspeed * (30.0f / 3600.0f);
-        float trailPx = (trailNm / outerNm) * (float)RING_OUTER_PX;
-        if (trailPx > 24.0f) trailPx = 24.0f;
-        if (trailPx >= 3.0f) {
-            for (int d = 1; d <= 6; d++) {
-                float frac = (float)d / 6.0f;
-                int dx = x - (int)(sin(hRad) * trailPx * frac);
-                int dy = y + (int)(cos(hRad) * trailPx * frac);
-                if (dx > 1 && dx < 238 && dy > 1 && dy < 238) {
-                    uint16_t dc = FadeColor(baseColor, (uint8_t)(effective * (0.6f - 0.08f * frac)));
-                    tft.drawPixel(dx, dy, dc);
-                    tft.drawPixel(dx + 1, dy, dc);
+    if (displayTrailDots) {
+        auto histIt = trailHistories.find(ac.icao);
+        if (histIt != trailHistories.end()) {
+            const auto& hist = histIt->second;
+            if (hist.count >= 2) {
+                uint32_t now = millis();
+                // Draw trail points oldest first (so newest is on top)
+                for (int n = 0; n < hist.count; n++) {
+                    int idx = (hist.head - hist.count + n + TRAIL_HISTORY_MAX) % TRAIL_HISTORY_MAX;
+                    const auto& tp = hist.points[idx];
+                    float ageSec = (float)(now - tp.timestamp) / 1000.0f;
+                    // Fade: full bright at 0s, gone at 300s (5 min)
+                    float fade = 1.0f - (ageSec / 300.0f);
+                    if (fade <= 0.0f) continue;
+                    uint8_t trailBright = (uint8_t)(effective * fade * 0.5f);
+                    if (trailBright < 1) continue;
+                    uint16_t dc = FadeColor(baseColor, trailBright);
+                    tft.drawPixel(tp.x, tp.y, dc);
                 }
             }
-        }
-    } else {
-        // Velocity vector: 15s look-ahead
-        float outerNm = rad * 60.0f;
-        if (outerNm < 0.5f) outerNm = 0.5f;
-        float leadNm = ac.groundspeed * (15.0f / 3600.0f);
-        float leadPx = (leadNm / outerNm) * (float)RING_OUTER_PX;
-        if (leadPx > 14.0f) leadPx = 14.0f;
-        if (leadPx >= 2.0f) {
-            int vx = x + (int)(sin(hRad) * leadPx);
-            int vy = y - (int)(cos(hRad) * leadPx);
-            tft.drawLine(x, y, vx, vy, FadeColor(baseColor, (uint8_t)(effective * 0.6f)));
         }
     }
 

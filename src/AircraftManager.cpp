@@ -400,9 +400,6 @@ void AircraftManager::Update()
     if (millis() - lastRotation >= fetchInterval) {
         lastRotation = millis();
         if (!RefreshAircraft()) {
-            // Fetch failed - retry immediately, then fetch more often next cycle
-            delay(500);
-            RefreshAircraft();
             fetchInterval = 5000;  // Fetch every 5s until success
         } else {
             fetchInterval = FETCH_DEFAULT;  // Back to normal 10s

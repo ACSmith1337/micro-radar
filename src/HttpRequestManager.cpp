@@ -12,7 +12,8 @@ static bool TimedWaitAvailable(WiFiClient& client, int timeout_ms)
     uint32_t timeout = (timeout_ms > 0) ? (uint32_t)timeout_ms : 0U;
     while (client.connected() && !client.available()) {
         if (millis() - start > timeout) return false;
-        delay(5);
+        yield();  // Keep WiFi watchdog alive, let web server respond
+        delay(1);
     }
     return client.connected();
 }
@@ -37,7 +38,8 @@ static int ReadHeaders(WiFiClient& client, int timeout_ms)
     uint32_t timeout = (timeout_ms > 0) ? (uint32_t)timeout_ms : 0U;
     while (client.connected() && (millis() - start < timeout)) {
         if (!client.available()) {
-            delay(5);
+            yield();
+            delay(1);
             continue;
         }
         String line = client.readStringUntil('\n');

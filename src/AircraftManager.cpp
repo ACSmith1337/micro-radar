@@ -110,6 +110,7 @@ static inline void RotateAngle(float &c, float &s, float delta)
 static inline void Renormalise(float &c, float &s)
 {
     float mag = sqrt(c * c + s * s);
+    if (mag < 1e-6f) { c = 1.0f; s = 0.0f; return; }
     c /= mag;
     s /= mag;
 }
@@ -165,7 +166,7 @@ static bool IsAlertSquawk(const SimpleAircraft& ac)
 {
     if (ac.squawk.isEmpty()) return false;
     int sq = ac.squawk.toInt();
-    return (sq == 7500 || sq == 7600 || sq == 7700 || sq == 1200);
+    return (sq == 7500 || sq == 7600 || sq == 7700);
 }
 
 static TargetGlyph GetTargetGlyph(const SimpleAircraft& ac)
@@ -366,6 +367,20 @@ void AircraftManager::DrawRadarLabels() const
 bool AircraftManager::IsAmber() const { return useAmber; }
 bool AircraftManager::IsRadial() const { return currentMode == ScanMode::RADIAL; }
 
+// ── Force sync (static, called from web UI) ──
+bool AircraftManager::forceSyncRequested = false;
+
+void AircraftManager::RequestForceSync()
+{
+    forceSyncRequested = true;
+    Serial.println("[RADAR] Force sync requested");
+}
+
+bool AircraftManager::HasForceSyncRequested()
+{
+    return forceSyncRequested;
+}
+
 void AircraftManager::Update()
 {
     static uint32_t lastRotation = 0;
@@ -374,31 +389,16 @@ void AircraftManager::Update()
     if (!initialSyncComplete) {
         uint32_t now = millis();
 
-        static uint32_t lastBlink = 0;
-        static bool blinkState = false;
-        
-        if ((now - lastBlink) >= 500) {
-            blinkState = !blinkState;
-            lastBlink = now;
-            
-            if (blinkState) {
-                tft.setTextColor(PalRingBright(useAmber), CLR_BG);
-                tft.setTextSize(2);
-                tft.drawCentreString("RADAR WARMUP", 120, 108, 1);
-            } else {
-                tft.fillScreen(CLR_BG);
-                DrawRadarGrid();
-                tft.setTextColor(PalRingBright(useAmber));
-                tft.setTextSize(1);
-                tft.drawCentreString("N", 120, 4, 1);
-                tft.drawCentreString("N", 121, 4, 1);
-                tft.drawCentreString("S", 120, 230, 1);
-                tft.drawCentreString("S", 121, 230, 1);
-                tft.drawCentreString("E", 230, 116, 1);
-                tft.drawCentreString("E", 231, 116, 1);
-                tft.drawCentreString("W", 10, 116, 1);
-                tft.drawCentreString("W", 11, 116, 1);
-            }
+        // Show warmup text once on entry
+        static bool warmupShown = false;
+        if (!warmupShown) {
+            warmupShown = true;
+            tft.fillScreen(CLR_BG);
+            DrawRadarGrid();
+            DrawRadarLabels();
+            tft.setTextColor(PalRingBright(useAmber), CLR_BG);
+            tft.setTextSize(2);
+            tft.drawCentreString("RADAR WARMUP", 120, 108, 1);
         }
 
         if ((now - initialSyncLastAttempt) >= 1500 || (now - warmupStartMs) >= 10000) {
@@ -419,7 +419,12 @@ void AircraftManager::Update()
     }
 
     // ── Fetch once per rotation (or more often after failures) ──
-    if (millis() - lastRotation >= fetchInterval) {
+    bool forceSync = AircraftManager::HasForceSyncRequested();
+    if (millis() - lastRotation >= fetchInterval || forceSync) {
+        if (forceSync) {
+            AircraftManager::forceSyncRequested = false;
+            Serial.println("[RADAR] Executing force sync");
+        }
         lastRotation = millis();
         if (!RefreshAircraft()) {
             fetchInterval = 5000;  // Fetch every 5s until success
@@ -452,22 +457,34 @@ void AircraftManager::Update()
 bool AircraftManager::RefreshAircraft()
 {
     StorePrev(trackedAircraft, prevPositions);
-    bool fetchOk = FetchLocal();
+
+    String dataSource = configServer.GetStoredString("datasource");
+    if (dataSource.isEmpty()) dataSource = "local";
+
+    bool fetchOk = false;
+    if (dataSource == "local") {
+        fetchOk = FetchLocal();
+    } else if (dataSource == "adsblol") {
+        // ADSB.lol: enforce 60s minimum between fetches (rate limit / memory)
+        // Skip gate on first fetch (lastFetch == 0 means never fetched)
+        constexpr uint32_t ADSBLol_FETCH_MIN = 60000;
+        if (lastFetch > 0 && millis() - lastFetch < ADSBLol_FETCH_MIN) {
+            return true; // skip — too soon
+        }
+        fetchOk = FetchAdsblol();
+    } else {
+        Serial.printf("[FETCH] Unknown datasource: %s\n", dataSource.c_str());
+        return false;
+    }
+
     if (!fetchOk) {
         Serial.println("[FETCH] Network error - keeping existing aircraft");
         return false;
     }
     lastFetch = millis();
 
-    std::vector<String> gone;
-    for (auto& [icao, lp] : lastPositions) {
-        if (!trackedAircraft.count(icao)) {
-            if (lp.visible) ErasePosition(lp.x, lp.y, AIRCRAFT_ERASE_RADIUS);
-            gone.push_back(icao);
-            trailHistories.erase(icao);  // Clean up trail history for gone aircraft
-        }
-    }
-    for (auto& icao : gone) lastPositions.erase(icao);
+    // Do NOT erase gone aircraft from lastPositions — let DecayAircraft fade them out
+    // The beam will still recharge them on contact
 
     for (auto& [icao, ac] : trackedAircraft) {
         auto proj = ProjectCoordinateToScreen(ac.lat, ac.lon);
@@ -508,13 +525,10 @@ void AircraftManager::DecayAircraft()
     for (auto& [icao, lp] : lastPositions) {
         if (!lp.visible || lp.brightness == 0) continue;
 
-        // Strong signals (quality > 0.5) decay 1 step, weak decay 2 steps
+        // Only decay aircraft that are no longer in the current feed
+        if (trackedAircraft.count(icao)) continue;
+
         uint8_t step = 1;
-        if (trackedAircraft.count(icao)) {
-            float ageSec = ComputeDataAgeSec(trackedAircraft.at(icao), millis() - lastFetch);
-            float quality = ComputeQuality01(ageSec);
-            if (quality <= 0.5f) step = 2;
-        }
 
         if (lp.brightness < step) lp.brightness = 0;
         else lp.brightness -= step;
@@ -522,10 +536,20 @@ void AircraftManager::DecayAircraft()
         if (lp.brightness == 0) {
             ErasePosition(lp.x, lp.y, AIRCRAFT_ERASE_RADIUS);
             faded.push_back(icao);
+            // Clean up trail history for fully faded aircraft
+            trailHistories.erase(icao);
         } else {
+            // Draw fading blip even if aircraft left the feed — use stored position
             if (trackedAircraft.count(icao)) {
                 auto& ac = trackedAircraft.at(icao);
                 DrawAircraftBlip(lp.x, lp.y, ac, lp.brightness);
+            } else {
+                // Aircraft gone from feed — draw ghost blip at last known position
+                // Use default aircraft color at reduced brightness
+                SimpleAircraft ghost;
+                ghost.category = "";
+                ghost.squawk = "";
+                DrawAircraftBlip(lp.x, lp.y, ghost, lp.brightness);
             }
         }
     }
@@ -586,7 +610,8 @@ void AircraftManager::DrawRadarFrame()
         PalScan(useAmber));
 
     // ── Clean beam edge (erase overshoot beyond outer ring) ──
-    for (int e = beamR; e <= r; e++) {
+    // Only clean 2 pixels beyond the ring — don't wipe the entire display edge
+    for (int e = beamR; e <= beamR + 2; e++) {
         tft.drawLine(
             cx + (int)(headC * e), cy - (int)(headS * e),
             cx + (int)(headNextC * e), cy - (int)(headNextS * e),
@@ -651,7 +676,6 @@ void AircraftManager::DrawRadarFrame()
     float beamTouchCos = cosf(touchHalfAngle);
     for (auto& [icao, lp] : lastPositions) {
         if (!lp.visible) continue;
-        if (!trackedAircraft.count(icao)) continue;
 
         int vx = lp.x - cx;
         int vy = cy - lp.y;
@@ -667,7 +691,16 @@ void AircraftManager::DrawRadarFrame()
 
         if (dot >= beamTouchCos) {
             lp.brightness = BRIGHTNESS_MAX;
-            DrawAircraftBlip(lp.x, lp.y, trackedAircraft.at(icao), lp.brightness);
+            // Draw with current tracked data if available, else ghost
+            auto it = trackedAircraft.find(icao);
+            if (it != trackedAircraft.end()) {
+                DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness);
+            } else {
+                SimpleAircraft ghost;
+                ghost.category = "";
+                ghost.squawk = "";
+                DrawAircraftBlip(lp.x, lp.y, ghost, lp.brightness);
+            }
         }
     }
 
@@ -699,8 +732,12 @@ void AircraftManager::DrawRadarFrame()
         if (currentIcao != alertIcao) {
             alertText = currentAlert;
             alertIcao = currentIcao;
-            alertVisible = true;
-            lastAlertBlink = millis();
+            if (!currentAlert.isEmpty()) {
+                alertVisible = true;
+                lastAlertBlink = millis();
+            } else {
+                alertVisible = false;
+            }
         }
 
         if (alertVisible && !alertText.isEmpty()) {
@@ -717,6 +754,9 @@ void AircraftManager::DrawRadarFrame()
                 tft.setTextColor(PalRingBright(useAmber), CLR_BG);
                 tft.drawCentreString(alertText.c_str(), cx, 220, 1);
             }
+        } else {
+            // Clear ghost text when no active alert
+            tft.fillRect(80, 214, 80, 12, CLR_BG);
         }
     }
 }
@@ -763,7 +803,6 @@ void AircraftManager::DrawRadarPing(int cx, int cy, int r)
             // Hit detection: illuminate aircraft when ring crosses their distance
             for (auto& [icao, lp] : lastPositions) {
                 if (!lp.visible) continue;
-                if (!trackedAircraft.count(icao)) continue;
                 int vx = lp.x - cx;
                 int vy = cy - lp.y;
                 float dist = sqrtf((float)(vx * vx + vy * vy));
@@ -1065,6 +1104,7 @@ bool AircraftManager::FetchLocal()
     candidates.reserve(arr.size());
 
     int droppedNoPos = 0;
+    int droppedStale = 0;
     for (size_t i = 0; i < arr.size(); i++) {
         auto item = arr[i];
         const char* hexVal = item["hex"];
@@ -1102,6 +1142,12 @@ bool AircraftManager::FetchLocal()
         const char* sq = item["squawk"];
         ac.squawk    = sq ? sq : "";
 
+        // Drop stale aircraft (seen_pos > 30s at source)
+        if (ac.seenPos > 30.0f) {
+            droppedStale++;
+            continue;
+        }
+
         candidates.push_back({distDegApprox, ac});
     }
 
@@ -1116,10 +1162,124 @@ bool AircraftManager::FetchLocal()
 
     doc.clear();
     trackedAircraft = next;
-    Serial.printf("[FETCH] In-range=%d tracked=%d (cap=%d) dropped_no_pos=%d\n",
-                  (int)candidates.size(), (int)trackedAircraft.size(), MAX_AIRCRAFT, droppedNoPos);
+    Serial.printf("[FETCH] In-range=%d tracked=%d (cap=%d) dropped_no_pos=%d dropped_stale=%d\n",
+                  (int)candidates.size(), (int)trackedAircraft.size(), MAX_AIRCRAFT, droppedNoPos, droppedStale);
     return true;
 }
 
-// ── Legacy stub ──
-void AircraftManager::OpenSky() {}
+// ── Fetch from ADSB.lol API (streaming — no buffer cap) ──
+bool AircraftManager::FetchAdsblol()
+{
+#if defined(ARDUINO_ARCH_ESP8266)
+    if (lat == 0.0f || lon == 0.0f) {
+        static int warnCount = 0;
+        if (++warnCount <= 3) Serial.println("[FETCH] ADSB.lol: lat/lon not configured");
+        return false;
+    }
+    if (rad <= 0.001f) {
+        static int warnCount = 0;
+        if (++warnCount <= 3) Serial.println("[FETCH] ADSB.lol: range not configured");
+        return false;
+    }
+
+    int rangeNm = (int)(rad * 60.0f + 0.5f);
+    if (rangeNm < 1) rangeNm = 1;
+    String url = "http://api.adsb.lol/v2/lat/" + String(lat, 6) + "/lon/" + String(lon, 6) + "/dist/" + String(rangeNm);
+    Serial.printf("[FETCH] ADSB.lol GET %s\n", url.c_str());
+
+    HttpStreamResult stream = http.StreamGet(url);
+    if (!stream.success) {
+        Serial.printf("[FETCH] ADSB.lol FAILED: code=%d err=%s\n", stream.statusCode, stream.errorMessage.c_str());
+        return false;
+    }
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, *stream.client);
+    stream.client->stop();
+    delete stream.client;
+
+    if (err) {
+        Serial.printf("[FETCH] ADSB.lol JSON parse error: %s\n", err.c_str());
+        doc.clear();
+        return false;
+    }
+    Serial.printf("[FETCH] ADSB.lol doc size=%d\n", doc.memoryUsage());
+
+    auto arr = doc["ac"];
+    if (!arr.is<JsonArray>()) {
+        Serial.println("[FETCH] ADSB.lol No 'ac' array in JSON");
+        doc.clear();
+        return false;
+    }
+
+    std::vector<std::pair<double, SimpleAircraft>> candidates;
+    candidates.reserve(arr.size());
+
+    int droppedNoPos = 0;
+    int droppedStale = 0;
+    for (size_t i = 0; i < arr.size(); i++) {
+        auto item = arr[i];
+        const char* hexVal = item["hex"];
+        if (!hexVal) continue;
+        String icao(hexVal);
+        if (icao.isEmpty()) continue;
+
+        double latVal = item["lat"] | 0.0;
+        double lonVal = item["lon"] | 0.0;
+        if (latVal == 0.0 && lonVal == 0.0) {
+            droppedNoPos++;
+            continue;
+        }
+
+        double dLat = latVal - (double)lat;
+        double dLon = (lonVal - (double)lon) * cos((double)lat * 0.0174533);
+        double distDegApprox = sqrt(dLat * dLat + dLon * dLon);
+        if (rad > 0.001f && distDegApprox > (double)rad) continue;
+
+        SimpleAircraft ac;
+        ac.icao      = icao;
+        ac.lat       = latVal;
+        ac.lon       = lonVal;
+        ac.altitude  = item["alt_baro"] | 0.0;
+        ac.heading   = item["track"] | 0.0;
+        if (isnan(ac.heading)) ac.heading = 0.0;
+        ac.groundspeed = item["gs"] | 0.0;
+        if (isnan(ac.groundspeed) || ac.groundspeed < 0.0f) ac.groundspeed = 0.0f;
+        ac.seen = item["seen"] | 0.0;
+        if (isnan(ac.seen) || ac.seen < 0.0f) ac.seen = 0.0f;
+        ac.seenPos = item["seen_pos"] | ac.seen;
+        if (isnan(ac.seenPos) || ac.seenPos < 0.0f) ac.seenPos = ac.seen;
+        const char* cat = item["category"];
+        ac.category = cat ? cat : "";
+        const char* sq = item["squawk"];
+        ac.squawk    = sq ? sq : "";
+
+        // Drop stale aircraft (seen_pos > 30s at source)
+        if (ac.seenPos > 30.0f) {
+            droppedStale++;
+            continue;
+        }
+
+        candidates.push_back({distDegApprox, ac});
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    std::map<String, SimpleAircraft> next;
+    for (size_t i = 0; i < candidates.size() && i < MAX_AIRCRAFT; i++) {
+        const auto& ac = candidates[i].second;
+        next[ac.icao] = ac;
+    }
+
+    doc.clear();
+    trackedAircraft = next;
+    Serial.printf("[FETCH] ADSB.lol In-range=%d tracked=%d (cap=%d) dropped_no_pos=%d dropped_stale=%d\n",
+                  (int)candidates.size(), (int)trackedAircraft.size(), MAX_AIRCRAFT, droppedNoPos, droppedStale);
+    return true;
+#else
+    (void)lat; (void)lon; (void)rad;
+    Serial.println("[FETCH] ADSB.lol: streaming not available on this platform");
+    return false;
+#endif
+}

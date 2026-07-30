@@ -26,6 +26,7 @@ struct SimpleAircraft {
     float groundspeed = 0.0f;  // knots
     float seen = 0.0f;         // seconds since last message at fetch time
     float seenPos = 0.0f;      // seconds since last position update at fetch time
+    float rssi = 0.0f;         // signal strength (negative dBm, 0 = unknown)
     String category = "";     // readsb category (e.g. A1..A7)
     String squawk = "";
 };
@@ -89,12 +90,14 @@ public:
     bool IsAmber() const;
     bool IsRadial() const;
 
+    // Force an immediate aircraft sync (called from web UI)
+    static void RequestForceSync();
+    static bool HasForceSyncRequested();
+    static bool forceSyncRequested;
+
 #if defined(ARDUINO_ARCH_ESP8266)
     void Draw(LGFX& buf);
 #endif
-
-    // Legacy OpenSky support (stripped from UI)
-    void OpenSky();
 
 private:
     float lat = 0.0f;
@@ -141,6 +144,7 @@ private:
     std::pair<int, int> ProjectCoordinateToScreen(float predLat, float predLon) const;
 
     bool FetchLocal();
+    bool FetchAdsblol();
 
     // External references
     ConfigurationWebServer& configServer;

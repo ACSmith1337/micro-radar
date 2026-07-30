@@ -33,6 +33,7 @@ private:
 
     void HandleRoot();
     void HandleSave();
+    void HandleSync();
 
 public:
     ConfigurationWebServer() : server(80), prefs() {}

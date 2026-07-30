@@ -7,7 +7,7 @@
 #endif
 
 // HTML stored in flash
-static const char CONFIG_HTML[] PROGMEM = R"(
+static const char CONFIG_HTML[] PROGMEM = R"HTML(
 <html>
     <head>
         <meta charset="utf-8">
@@ -62,8 +62,8 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                     <select
                         name="datasource"
                         class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
-                        <option value="opensky"%DS_OPENSKY%>OpenSky Network (rate-limited)</option>
                         <option value="local"%DS_LOCAL%>Local readsb/dump1090 (real-time)</option>
+                        <option value="adsblol"%DS_ADSBLOL%>ADSB.lol (global API)</option>
                     </select>
                 </label>
 
@@ -105,24 +105,6 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                             type="text"
                             placeholder="/data/aircraft.json"
                             value='%READSBPATH%'
-                            class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
-                    </label>
-                </fieldset>
-
-                <fieldset id="opensky-fields" class="border border-green-700 p-3 flex flex-col gap-2">
-                    <legend class="px-2 text-xs">OpenSky Network Settings</legend>
-                    <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-                        <span>OpenSkyAPI Client ID:</span>
-                        <input
-                            name="opensky-id"
-                            value='%OPENSKY_ID%'
-                            class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
-                    </label>
-                    <label class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-                        <span>OpenSkyAPI Client Secret:</span>
-                        <input
-                            name="opensky-secret"
-                            value='%OPENSKY_SECRET%'
                             class="flex-1 border border-green-500 bg-gray-900 w-full px-3 py-2 text-lg sm:text-base sm:px-1 sm:py-0">
                     </label>
                 </fieldset>
@@ -201,7 +183,16 @@ static const char CONFIG_HTML[] PROGMEM = R"(
                         value="Save"
                         class="bg-green-500 text-black mt-4 px-4 py-3 text-lg sm:text-base sm:px-2 sm:py-0 self-start cursor-pointer">
 
+                    <button
+                        type="button"
+                        id="sync-btn"
+                        onclick="fetch('/sync').then(r=>r.text()).then(t=>{document.getElementById('sync-status').textContent=t;setTimeout(()=>document.getElementById('sync-status').textContent='',3000);})"
+                        class="bg-gray-700 text-green-400 border border-green-500 mt-4 px-4 py-3 text-lg sm:text-base sm:px-2 sm:py-0 self-start cursor-pointer">
+                        Sync Now
+                    </button>
+
                         <div id="result" class="mt-4 px-1 sm:px-10"></div>
+                        <div id="sync-status" class="mt-4 px-1 sm:px-10 text-sm" style="color:#aaa;"></div>
                 </div>
             </form>
         </fieldset>
@@ -262,7 +253,6 @@ static const char CONFIG_HTML[] PROGMEM = R"(
             const maxRangeInput = document.querySelector('input[name="maxrange"]');
             const ringInfo = document.getElementById('ring-info');
             const localFields = document.getElementById('local-fields');
-            const openskyFields = document.getElementById('opensky-fields');
 
             function fmtNm(v) {
                 if (!isFinite(v) || v <= 0) return '--';
@@ -289,10 +279,8 @@ static const char CONFIG_HTML[] PROGMEM = R"(
             function toggleSections() {
                 if (ds.value === 'local') {
                     localFields.style.display = 'flex';
-                    openskyFields.style.display = 'none';
                 } else {
                     localFields.style.display = 'none';
-                    openskyFields.style.display = 'flex';
                 }
             }
 
@@ -303,7 +291,7 @@ static const char CONFIG_HTML[] PROGMEM = R"(
         </script>
     </body>
 </html>
-)";
+)HTML";
 
 #if defined(ARDUINO_ARCH_ESP32)
 
@@ -323,25 +311,21 @@ void ConfigurationWebServer::Initialise() {
         if (maxRangeNm.isEmpty()) {
             maxRangeNm = String(radiusDeg.toFloat() * 60.0f, 1);
         }
-        const String openskyClientId = prefs.getString("opensky-id", "");
-        String openskySecret = prefs.getString("opensky-secret", "");
         const String scanlineEnabled = prefs.getString("scanline", "true");
         const String infoTextEnabled = prefs.getString("infotext", "true");
         const String triangleEnabled = prefs.getString("triangle", "true");
         const String trailsEnabled = prefs.getString("trails", "false");
         const String squawkAlertEnabled = prefs.getString("squawkalert", "false");
         const String phosphor = prefs.getString("phosphor", "green");
-        const String dataSource = prefs.getString("datasource", "opensky");
+        const String dataSource = prefs.getString("datasource", "local");
         const String readsbHost = prefs.getString("readsbhost", "");
         const String readsbPort = prefs.getString("readsbport", "8080");
         const String fetchInterval = prefs.getString("fetchinterval", "3");
         const String scanMode = prefs.getString("scanmode", "angular");
         prefs.end();
 
-        std::fill(openskySecret.begin(), openskySecret.end(), '*');
-
-        const String dsOpenSky = dataSource == "opensky" ? "selected" : "";
         const String dsLocal = dataSource == "local" ? "selected" : "";
+        const String dsAdsblol = dataSource == "adsblol" ? "selected" : "";
         const String phosphorGreen = phosphor == "green" ? "selected" : "";
         const String phosphorAmber = phosphor == "amber" ? "selected" : "";
         const String scanModeAngular = scanMode == "angular" ? "selected" : "";
@@ -350,13 +334,11 @@ void ConfigurationWebServer::Initialise() {
         AsyncWebServerResponse* response = request->beginResponse(
             200, "text/html",
             (const uint8_t*)CONFIG_HTML, sizeof(CONFIG_HTML) - 1,
-            [latitude, longitude, maxRangeNm, openskyClientId, openskySecret, scanlineEnabled, infoTextEnabled, triangleEnabled, trailsEnabled, squawkAlertEnabled, phosphorGreen, phosphorAmber, dsOpenSky, dsLocal, readsbHost, readsbPort, fetchInterval, scanModeAngular, scanModeRadial]
+            [latitude, longitude, maxRangeNm, scanlineEnabled, infoTextEnabled, triangleEnabled, trailsEnabled, squawkAlertEnabled, phosphorGreen, phosphorAmber, dsLocal, dsAdsblol, readsbHost, readsbPort, fetchInterval, scanModeAngular, scanModeRadial]
             (const String& var) -> String {
                 if (var == "LATITUDE")       return latitude;
                 if (var == "LONGITUDE")      return longitude;
                 if (var == "MAXRANGE")       return maxRangeNm;
-                if (var == "OPENSKY_ID")     return openskyClientId;
-                if (var == "OPENSKY_SECRET") return openskySecret;
                 if (var == "SCANLINE")       return scanlineEnabled == "true" ? "checked" : "";
                 if (var == "INFOTEXT")       return infoTextEnabled == "true" ? "checked" : "";
                 if (var == "TRIANGLE")       return triangleEnabled == "true" ? "checked" : "";
@@ -364,8 +346,8 @@ void ConfigurationWebServer::Initialise() {
                 if (var == "SQUAWKALERT")    return squawkAlertEnabled == "true" ? "checked" : "";
                 if (var == "PHOSPHOR_GREEN") return phosphorGreen;
                 if (var == "PHOSPHOR_AMBER") return phosphorAmber;
-                if (var == "DS_OPENSKY")     return dsOpenSky;
                 if (var == "DS_LOCAL")       return dsLocal;
+                if (var == "DS_ADSBLOL")     return dsAdsblol;
                 if (var == "READSBHOST")     return readsbHost;
                 if (var == "READSBPORT")     return readsbPort;
                 if (var == "FETCHINTERVAL")  return fetchInterval;
@@ -395,7 +377,6 @@ void ConfigurationWebServer::Initialise() {
         TrySaveParam("longitude");
         TrySaveParam("maxrange");
         TrySaveParam("datasource");
-        TrySaveParam("opensky-id");
         TrySaveParam("readsbhost");
         TrySaveParam("readsbport");
         TrySaveParam("readsbpath");
@@ -411,14 +392,6 @@ void ConfigurationWebServer::Initialise() {
             }
         }
 
-        const auto* param = request->getParam("opensky-secret", true);
-        if (param != nullptr) {
-            const String& secret = param->value();
-            if (secret.indexOf('*') == -1) {
-                prefs.putString("opensky-secret", secret);
-            }
-        }
-
         prefs.putString("scanline", request->hasParam("scanline", true) ? "true" : "false");
         prefs.putString("triangle", request->hasParam("triangle", true) ? "true" : "false");
         prefs.putString("infotext", request->hasParam("infotext", true) ? "true" : "false");
@@ -428,6 +401,12 @@ void ConfigurationWebServer::Initialise() {
 
         request->send(200, "text/html", "Saved - restarting device...");
         ESP.restart();
+    });
+
+    server->on("/sync", HTTP_GET, [&](AsyncWebServerRequest* request) {
+        Serial.println("[GET] Sync now requested");
+        AircraftManager::RequestForceSync();
+        request->send(200, "text/plain", "Sync triggered");
     });
 
     server->begin();
@@ -451,23 +430,19 @@ void ConfigurationWebServer::HandleRoot() {
     if (maxRangeNm.isEmpty()) {
         maxRangeNm = String(radiusDeg.toFloat() * 60.0f, 1);
     }
-    String openskyClientId = prefs.getString("opensky-id", "");
-    String openskySecret = prefs.getString("opensky-secret", "");
     String scanlineEnabled = prefs.getString("scanline", "true");
     String infoTextEnabled = prefs.getString("infotext", "true");
     String triangleEnabled = prefs.getString("triangle", "true");
     String trailsEnabled = prefs.getString("trails", "false");
     String squawkAlertEnabled = prefs.getString("squawkalert", "false");
     String phosphor = prefs.getString("phosphor", "green");
-    String dataSource = prefs.getString("datasource", "opensky");
+    String dataSource = prefs.getString("datasource", "local");
     String readsbHost = prefs.getString("readsbhost", "");
     String readsbPort = prefs.getString("readsbport", "8080");
     String readsbPath = prefs.getString("readsbpath", "/data/aircraft.json");
     String fetchInterval = prefs.getString("fetchinterval", "3");
     String scanMode = prefs.getString("scanmode", "angular");
     prefs.end();
-
-    std::fill(openskySecret.begin(), openskySecret.end(), '*');
 
     String html;
 
@@ -483,8 +458,6 @@ void ConfigurationWebServer::HandleRoot() {
     substitutePlaceholders(html, "%LATITUDE%", latitude);
     substitutePlaceholders(html, "%LONGITUDE%", longitude);
     substitutePlaceholders(html, "%MAXRANGE%", maxRangeNm);
-    substitutePlaceholders(html, "%OPENSKY_ID%", openskyClientId);
-    substitutePlaceholders(html, "%OPENSKY_SECRET%", openskySecret);
     substitutePlaceholders(html, "%SCANLINE%", scanlineEnabled == "true" ? "checked" : "");
     substitutePlaceholders(html, "%INFOTEXT%", infoTextEnabled == "true" ? "checked" : "");
     substitutePlaceholders(html, "%TRIANGLE%", triangleEnabled == "true" ? "checked" : "");
@@ -492,8 +465,8 @@ void ConfigurationWebServer::HandleRoot() {
     substitutePlaceholders(html, "%SQUAWKALERT%", squawkAlertEnabled == "true" ? "checked" : "");
     substitutePlaceholders(html, "%PHOSPHOR_GREEN%", phosphor == "green" ? "selected" : "");
     substitutePlaceholders(html, "%PHOSPHOR_AMBER%", phosphor == "amber" ? "selected" : "");
-    substitutePlaceholders(html, "%DS_OPENSKY%", dataSource == "opensky" ? "selected" : "");
     substitutePlaceholders(html, "%DS_LOCAL%", dataSource == "local" ? "selected" : "");
+    substitutePlaceholders(html, "%DS_ADSBLOL%", dataSource == "adsblol" ? "selected" : "");
     substitutePlaceholders(html, "%READSBHOST%", readsbHost);
     substitutePlaceholders(html, "%READSBPORT%", readsbPort);
     substitutePlaceholders(html, "%READSBPATH%", readsbPath);
@@ -528,7 +501,6 @@ void ConfigurationWebServer::HandleSave() {
     TrySaveParam("longitude");
     TrySaveParam("maxrange");
     TrySaveParam("datasource");
-    TrySaveParam("opensky-id");
     TrySaveParam("readsbhost");
     TrySaveParam("readsbport");
     TrySaveParam("readsbpath");
@@ -540,13 +512,6 @@ void ConfigurationWebServer::HandleSave() {
         float maxRangeNm = server.arg("maxrange").toFloat();
         if (maxRangeNm > 0.0f) {
             prefs.putString("radius", String(maxRangeNm / 60.0f, 4));
-        }
-    }
-
-    if (server.hasArg("opensky-secret")) {
-        const String& secret = server.arg("opensky-secret");
-        if (secret.indexOf('*') == -1) {
-            prefs.putString("opensky-secret", secret);
         }
     }
 

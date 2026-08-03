@@ -31,15 +31,6 @@ struct SimpleAircraft {
     String squawk = "";
 };
 
-// ─── Interpolation storage ───
-struct InterpPosition {
-    float prevLat = 0.0f;
-    float prevLon = 0.0f;
-    float lat = 0.0f;
-    float lon = 0.0f;
-    bool hasPrev = false;
-};
-
 // ─── Drawing state per aircraft ──
 struct DrawPosition {
     int x;
@@ -123,7 +114,6 @@ private:
     bool warmupComplete = false;
 
     std::map<String, SimpleAircraft> trackedAircraft;
-    std::map<String, InterpPosition> prevPositions;
     std::map<String, DrawPosition> lastPositions;
     std::map<String, TrailHistory> trailHistories;  // per-aircraft position history
     std::map<String, float> decayAccumulators;      // per-aircraft decay accumulator
@@ -136,14 +126,12 @@ private:
     void DrawTrail(int cx, int cy, int r, float headC, float headS);
     bool RefreshAircraft();
     void DecayAircraft();
-
-    void UpdateAircraftDisplay();
-    void StorePreviousPositions();
     void ErasePosition(int x, int y, uint8_t radius = 8) const;
     void DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, uint8_t brightness = 24) const;
     void DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, uint8_t brightness, uint16_t overrideColor) const;
-    uint16_t FadeColor(uint16_t base, uint8_t level) const;
-
+    void UpdateAlertState(bool displayAlerts);
+    void DrawAlertText(bool displayAlerts);
+    void DrawAllAircraft(bool displayAlerts);
     std::pair<int, int> ProjectCoordinateToScreen(float predLat, float predLon) const;
 
     bool FetchLocal();

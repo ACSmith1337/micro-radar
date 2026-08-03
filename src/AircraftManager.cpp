@@ -26,8 +26,8 @@ constexpr uint16_t CLR_GLOW_COMM_A   = 0x6180;       // R:12 G:20 B:0
 
 // Shared
 constexpr uint16_t CLR_BG            = 0x0000;
-constexpr uint16_t CLR_MILITARY      = 0xF610;       // Orange (not red)
-constexpr uint16_t CLR_GLOW_MIL      = 0xF008;       // Dim orange glow
+constexpr uint16_t CLR_MILITARY      = 0xFD20;       // Bright orange (R:31 G:21 B:0)
+constexpr uint16_t CLR_GLOW_MIL      = 0xF608;       // Dim orange glow
 constexpr uint16_t CLR_UNKNOWN       = 0x0520;
 constexpr uint16_t CLR_ALERT         = 0xF800;       // Red - emergency squawk only
 
@@ -127,18 +127,6 @@ static String FormatRangeNm(float nm)
     return String((int)(nm + 0.5f)) + "nm";
 }
 
-// ─── Store current positions for interpolation before new fetch ──
-static void StorePrev(const std::map<String, SimpleAircraft>& tracked,
-                      std::map<String, InterpPosition>& prev)
-{
-    for (auto& [icao, ac] : tracked) {
-        auto& p = prev[icao];
-        p.prevLat = ac.lat;
-        p.prevLon = ac.lon;
-        p.hasPrev = true;
-    }
-}
-
 // ════════════════════════════════════════════════════════════
 
 enum class TargetGlyph {
@@ -176,47 +164,6 @@ static TargetGlyph GetTargetGlyph(const SimpleAircraft& ac)
     if (ac.category == "A5" || ac.category == "A6") return TargetGlyph::HEAVY;
     if (ac.groundspeed > 1.0f) return TargetGlyph::FIXED_WING;
     return TargetGlyph::UNKNOWN;
-}
-
-static float ComputeDataAgeSec(const SimpleAircraft& ac, uint32_t msSinceFetch)
-{
-    float ageAtFetch = ac.seen;
-    if (ac.seenPos > ageAtFetch) ageAtFetch = ac.seenPos;
-    return ageAtFetch + ((float)msSinceFetch / 1000.0f);
-}
-
-static float ComputeQuality01(float ageSec)
-{
-    if (ageSec <= 2.0f) return 1.0f;
-    if (ageSec >= 28.0f) return 0.0f;
-    float q = 1.0f - ((ageSec - 2.0f) / 26.0f);
-    if (q < 0.0f) q = 0.0f;
-    if (q > 1.0f) q = 1.0f;
-    return q;
-}
-
-static void DeadReckonPosition(const SimpleAircraft& ac, uint32_t msSinceFetch, float& outLat, float& outLon)
-{
-    outLat = ac.lat;
-    outLon = ac.lon;
-    if (ac.groundspeed < 2.0f) return;
-
-    float dt = ((float)msSinceFetch / 1000.0f) + ac.seenPos;
-    if (dt <= 0.05f || dt > 35.0f) return;
-
-    float trk = ac.heading * 0.0174533f;
-    float speedNmPerSec = ac.groundspeed / 3600.0f;
-    float distNm = speedNmPerSec * dt;
-
-    float dNorthNm = cosf(trk) * distNm;
-    float dEastNm = sinf(trk) * distNm;
-    float dLatDeg = dNorthNm / 60.0f;
-    float cosLat = cosf(ac.lat * 0.0174533f);
-    if (cosLat < 0.01f) cosLat = 0.01f;
-    float dLonDeg = dEastNm / (60.0f * cosLat);
-
-    outLat = ac.lat + dLatDeg;
-    outLon = ac.lon + dLonDeg;
 }
 
 // ════════════════════════════════════════════════════════════
@@ -457,8 +404,6 @@ void AircraftManager::Update()
 // ── Called once per rotation ──
 bool AircraftManager::RefreshAircraft()
 {
-    StorePrev(trackedAircraft, prevPositions);
-
     String dataSource = configServer.GetStoredString("datasource");
     if (dataSource.isEmpty()) dataSource = "local";
 
@@ -593,6 +538,111 @@ void AircraftManager::DecayAircraft()
     }
 }
 
+// ── Shared alert state accessible from both scan modes ──
+struct AlertGlobals {
+    static bool blinkOn;
+    static char icaoBuf[8];
+    static char textBuf[32];
+    static bool active;
+};
+bool AlertGlobals::blinkOn = true;
+char AlertGlobals::icaoBuf[8] = {0};
+char AlertGlobals::textBuf[32] = {0};
+bool AlertGlobals::active = false;
+
+// ── Update alert state (call once per frame from both scan modes) ──
+void AircraftManager::UpdateAlertState(bool displayAlerts)
+{
+    static uint32_t lastBlink = 0;
+    static uint32_t lastCycle = 0;
+    static int idx = 0;
+    static char pool[16][8];
+    constexpr uint32_t CYCLE_MS = 3000;
+
+    int count = 0;
+    if (displayAlerts) {
+        for (const auto& [k, ac] : trackedAircraft) {
+            if (IsAlertSquawk(ac)) {
+                if (count < 16) {
+                    strncpy(pool[count], k.c_str(), 7);
+                    pool[count][7] = '\0';
+                    count++;
+                }
+            }
+        }
+    }
+
+    if (count > 0) {
+        uint32_t now = millis();
+        char* cur;
+        if (count == 1) {
+            cur = pool[0];
+        } else {
+            if (now - lastCycle >= CYCLE_MS) {
+                idx = (idx + 1) % count;
+                lastCycle = now;
+                AlertGlobals::blinkOn = true;
+                lastBlink = now;
+            }
+            cur = pool[idx];
+        }
+        if (strcmp(AlertGlobals::icaoBuf, cur) != 0) {
+            strncpy(AlertGlobals::icaoBuf, cur, 7);
+            AlertGlobals::icaoBuf[7] = '\0';
+            const char* icaoC = AlertGlobals::icaoBuf;
+            SimpleAircraft* ac = nullptr;
+            for (auto& [k, v] : trackedAircraft) {
+                if (strncmp(k.c_str(), icaoC, 8) == 0) { ac = &v; break; }
+            }
+            if (ac) snprintf(AlertGlobals::textBuf, sizeof(AlertGlobals::textBuf), "SQUAWK %s", ac->squawk.c_str());
+        }
+        AlertGlobals::active = true;
+    } else {
+        if (AlertGlobals::active) {
+            tft.fillRect(80, 214, 80, 12, CLR_BG);
+            AlertGlobals::active = false;
+        }
+        AlertGlobals::textBuf[0] = '\0';
+        AlertGlobals::icaoBuf[0] = '\0';
+        idx = 0;
+    }
+
+    if (AlertGlobals::textBuf[0] != '\0') {
+        uint32_t now = millis();
+        if (now - lastBlink >= 400) {
+            AlertGlobals::blinkOn = !AlertGlobals::blinkOn;
+            lastBlink = now;
+        }
+    }
+}
+
+// ── Draw alert text (call from both scan modes) ──
+void AircraftManager::DrawAlertText(bool displayAlerts)
+{
+    if (displayAlerts && AlertGlobals::textBuf[0] != '\0') {
+        uint16_t col = AlertGlobals::blinkOn ? CLR_ALERT : CLR_RING_BRIGHT_A;
+        tft.setTextColor(col, CLR_BG);
+        tft.setTextSize(1);
+        tft.drawCentreString(AlertGlobals::textBuf, 120, 220, 1);
+    }
+}
+
+// ── Draw all aircraft blips with alert flash support ──
+void AircraftManager::DrawAllAircraft(bool displayAlerts)
+{
+    for (const auto& [icao, lp] : lastPositions) {
+        if (!lp.visible || lp.brightness == 0) continue;
+        auto it = trackedAircraft.find(icao);
+        if (it == trackedAircraft.end()) continue;
+        if (displayAlerts && AlertGlobals::icaoBuf[0] != '\0' && strncmp(icao.c_str(), AlertGlobals::icaoBuf, 8) == 0) {
+            uint16_t flashCol = AlertGlobals::blinkOn ? CLR_ALERT : CLR_RING_BRIGHT_A;
+            DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness, flashCol);
+        } else {
+            DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness);
+        }
+    }
+}
+
 // ── Incremental scan frame ──
 void AircraftManager::DrawRadarFrame()
 {
@@ -633,7 +683,6 @@ void AircraftManager::DrawRadarFrame()
     DrawTrail(cx, cy, r, headC, headS);
 
     // ── Bright scan line ──
-    // Use RING_OUTER_PX so beam doesn't overshoot the outer ring
     const int beamR = RING_OUTER_PX;
     float headNextC = headC + headS * DEG1;
     float headNextS = headS - headC * DEG1;
@@ -642,9 +691,7 @@ void AircraftManager::DrawRadarFrame()
         cx + (int)(headNextC * beamR), cy - (int)(headNextS * beamR),
         PalScan(useAmber));
 
-    // ── Clean beam edge (erase overshoot beyond outer ring) ──
-    // Only clean 2 pixels beyond the ring — don't wipe the ring itself
-    // Clamp to screen bounds to prevent row corruption
+    // ── Clean beam edge ──
     for (int e = beamR + 1; e <= beamR + 2; e++) {
         int x1 = cx + (int)(headC * e);
         int y1 = cy - (int)(headS * e);
@@ -657,28 +704,11 @@ void AircraftManager::DrawRadarFrame()
         tft.drawLine(x1, y1, x2, y2, CLR_BG);
     }
 
-    // ── Grid: redraw every frame so trail never erases it ──
+    // ── Grid + labels ──
     DrawRadarGrid();
-
-    // ── Bearing labels ──
-    tft.setTextColor(PalRingBright(useAmber));
-    tft.setTextSize(1);
-    tft.drawCentreString("N", cx, 2, 1);
-    tft.drawCentreString("N", cx + 1, 2, 1);
-    tft.drawCentreString("S", cx, 228, 1);
-    tft.drawCentreString("S", cx + 1, 228, 1);
-    tft.drawCentreString("E", 236, cy - 3, 1);
-    tft.drawCentreString("E", 237, cy - 3, 1);
-    tft.drawCentreString("W", 4, cy - 3, 1);
-    tft.drawCentreString("W", 5, cy - 3, 1);
-
-    // ── Range labels ──
-    tft.drawString(ringLabelOuter, cx + 6, cy - RING_OUTER_PX + 4, 1);
-    tft.drawString(ringLabelMid,   cx + 6, cy - RING_MID_PX   + 4, 1);
-    tft.drawString(ringLabelInner, cx + 6, cy - RING_INNER_PX + 4, 1);
+    DrawRadarLabels();
 
     // ── PPI beam-hit refresh ──
-    // When the beam touches a target, illuminate it to full brightness (like real PPI)
     float touchHalfAngle = delta + (DEG1 * 2.0f);
     if (touchHalfAngle < (DEG1 * 4.0f)) touchHalfAngle = DEG1 * 4.0f;
     if (touchHalfAngle > (DEG1 * 12.0f)) touchHalfAngle = DEG1 * 12.0f;
@@ -712,105 +742,10 @@ void AircraftManager::DrawRadarFrame()
         }
     }
 
-    // ── Squawk alert state (shared by redraw + text) ──
-    static uint32_t lastAlertBlink = 0;
-    static bool blinkState = true;
-    static char alertTextBuf[32] = {0};
-    static char alertIcaoBuf[8] = {0};
-    static bool wasAlerting = false;
-    static uint32_t lastCycleTime = 0;
-    static int alertIdx = 0;
-    static char alertIcaosBuf[16][8];  // Static pool — no heap churn
-    static int alertCountPrev = 0;
-    constexpr uint32_t CYCLE_INTERVAL = 3000;
-
-    // Collect all alerting aircraft
-    int alertCount = 0;
-    if (alertSquawk) {
-        for (const auto& [icao, ac] : trackedAircraft) {
-            if (IsAlertSquawk(ac)) {
-                if (alertCount < 16) {
-                    strncpy(alertIcaosBuf[alertCount], icao.c_str(), 7);
-                    alertIcaosBuf[alertCount][7] = '\0';
-                    alertCount++;
-                }
-            }
-        }
-    }
-
-    // Cycle through alerts
-    if (alertCount > 0) {
-        uint32_t now = millis();
-        char* currentIcao;
-        if (alertCount == 1) {
-            currentIcao = alertIcaosBuf[0];
-        } else {
-            if (now - lastCycleTime >= CYCLE_INTERVAL) {
-                alertIdx = (alertIdx + 1) % alertCount;
-                lastCycleTime = now;
-                blinkState = true;
-                lastAlertBlink = now;
-            }
-            currentIcao = alertIcaosBuf[alertIdx];
-        }
-        // Copy to shared buffer only if changed
-        if (strcmp(alertIcaoBuf, currentIcao) != 0) {
-            strncpy(alertIcaoBuf, currentIcao, 7);
-            alertIcaoBuf[7] = '\0';
-            // Build text from current aircraft
-            const char* icaoC = alertIcaoBuf;
-            SimpleAircraft* currentAc = nullptr;
-            for (auto& [k, v] : trackedAircraft) {
-                if (strncmp(k.c_str(), icaoC, 8) == 0) {
-                    currentAc = &v;
-                    break;
-                }
-            }
-            if (currentAc) {
-                snprintf(alertTextBuf, sizeof(alertTextBuf), "SQUAWK %s", currentAc->squawk.c_str());
-            }
-        }
-    } else {
-        // No more alerts — clear
-        if (wasAlerting) {
-            tft.fillRect(80, 214, 80, 12, CLR_BG);
-            wasAlerting = false;
-        }
-        alertTextBuf[0] = '\0';
-        alertIcaoBuf[0] = '\0';
-        alertIdx = 0;
-    }
-    if (alertTextBuf[0] != '\0') wasAlerting = true;
-
-    // Blink timer
-    if (alertTextBuf[0] != '\0') {
-        uint32_t now = millis();
-        if (now - lastAlertBlink >= 400) {
-            blinkState = !blinkState;
-            lastAlertBlink = now;
-        }
-    }
-
-    // ── Redraw aircraft blips every frame (prevents ghost trails) ──
-    for (const auto& [icao, lp] : lastPositions) {
-        if (!lp.visible || lp.brightness == 0) continue;
-        auto it = trackedAircraft.find(icao);
-        if (it == trackedAircraft.end()) continue;
-        if (alertSquawk && alertIcaoBuf[0] != '\0' && strncmp(icao.c_str(), alertIcaoBuf, 8) == 0) {
-            uint16_t flashCol = blinkState ? CLR_ALERT : CLR_RING_BRIGHT_A;
-            DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness, flashCol);
-        } else {
-            DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness);
-        }
-    }
-
-    // ── Squawk alert text ──
-    if (alertSquawk && alertTextBuf[0] != '\0') {
-        uint16_t col = blinkState ? CLR_ALERT : CLR_RING_BRIGHT_A;
-        tft.setTextColor(col, CLR_BG);
-        tft.setTextSize(1);
-        tft.drawCentreString(alertTextBuf, cx, 220, 1);
-    }
+    // ── Alert update + draw ──
+    UpdateAlertState(alertSquawk);
+    DrawAllAircraft(alertSquawk);
+    DrawAlertText(alertSquawk);
 }
 
 // ── Draw phosphor trail ──
@@ -902,13 +837,10 @@ void AircraftManager::DrawRadarPing(int cx, int cy, int r)
         prevRadius = 255;
     }
 
-    // ── Draw aircraft blips ──
-    for (const auto& [icao, lp] : lastPositions) {
-        if (!lp.visible || lp.brightness == 0) continue;
-        auto it = trackedAircraft.find(icao);
-        if (it == trackedAircraft.end()) continue;
-        DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness);
-    }
+    // ── Alert update + draw ──
+    UpdateAlertState(alertSquawk);
+    DrawAllAircraft(alertSquawk);
+    DrawAlertText(alertSquawk);
 }
 
 // ── Static grid ──
@@ -940,19 +872,28 @@ void AircraftManager::Draw(LGFX& /*buf*/)
 }
 
 // ── Fade color toward black ──
-uint16_t AircraftManager::FadeColor(uint16_t base, uint8_t level) const
+// Precomputed LUT: 25 levels (0..24) × 256 possible base colors = too big
+// Instead: per-component LUT. Each RGB565 component is 0..63.
+// fadeLUT[64][25] maps (component_value, brightness_level) → faded component
+// But that's 64×25 = 1600 entries × 1 byte = 1.6KB in flash — worth it.
+// Simpler: just scale component by level/BRIGHTNESS_MAX using a small multiplier table.
+// fadeScale[level] = (level * 256 + BRIGHTNESS_MAX/2) / BRIGHTNESS_MAX  (fixed-point ×256)
+// result = (component * fadeScale[level]) >> 8  — one multiply, one shift
+static const uint8_t fadeScale[25] = {
+    0, 10, 21, 32, 43, 53, 64, 75, 85, 96, 107, 117, 128, 139, 149, 160, 171, 181, 192, 203, 213, 224, 235, 245, 256
+};
+
+static inline uint16_t FadeColor(uint16_t base, uint8_t level)
 {
     if (level <= 0) return CLR_BG;
     if (level >= BRIGHTNESS_MAX) return base;
-
+    uint8_t s = fadeScale[level];
     uint16_t r5 = (base >> 11) & 0x1F;
     uint16_t g6 = (base >> 5) & 0x3F;
     uint16_t b5 = base & 0x1F;
-
-    uint16_t fr = (r5 * level) / BRIGHTNESS_MAX;
-    uint16_t fg = (g6 * level) / BRIGHTNESS_MAX;
-    uint16_t fb = (b5 * level) / BRIGHTNESS_MAX;
-
+    uint16_t fr = (r5 * s) >> 8;
+    uint16_t fg = (g6 * s) >> 8;
+    uint16_t fb = (b5 * s) >> 8;
     return (fr << 11) | (fg << 5) | fb;
 }
 

@@ -259,20 +259,24 @@ HttpResult HttpRequestManager::Get(const String& url, const std::vector<std::pai
     }
     result.statusCode = statusCode;
 
-  // Parse headers → get Content-Length
+    // Parse headers → get Content-Length
     int contentLength = ReadHeaders(client, HTTP_TIMEOUT_MS);
     Serial.printf("[GET] Status=%d CL=%d\r\n", statusCode, contentLength);
 
     if (statusCode >= 200 && statusCode < 300) {
         result.success = true;
-        if (contentLength > 0) {
-            // Bulletproof: read exactly Content-Length bytes
+        if (contentLength > 0 && contentLength <= MAX_HTTP_BODY) {
+            // Small enough to buffer
             result.response = ReadBody(client, contentLength, MAX_HTTP_BODY);
-            if ((int)result.response.length() < contentLength && contentLength <= MAX_HTTP_BODY) {
+            if ((int)result.response.length() < contentLength) {
                 result.success = false;
                 result.errorMessage = "Truncated body: got " + String(result.response.length()) +
                                       " of " + String(contentLength);
             }
+        } else if (contentLength > MAX_HTTP_BODY) {
+            // Large response — caller must use StreamGet instead
+            result.success = false;
+            result.errorMessage = "Response too large (" + String(contentLength) + " bytes) — use StreamGet";
         } else {
             // Fallback: drain until connection closes
             result.response = ReadBodyStream(client, MAX_HTTP_BODY);
@@ -284,7 +288,7 @@ HttpResult HttpRequestManager::Get(const String& url, const std::vector<std::pai
         return result;
     }
 
-    // Drain any trailing data (server sends more than Content-Length)
+    // Drain any trailing data
     while (client.connected() || client.available()) {
         yield();
         delay(1);
@@ -293,6 +297,77 @@ HttpResult HttpRequestManager::Get(const String& url, const std::vector<std::pai
     }
 
     client.stop();
+    return result;
+}
+
+// ── Streaming GET: returns client after headers for direct ArduinoJson deserialization ──
+HttpStreamResult HttpRequestManager::StreamGet(const String& url, const std::vector<std::pair<String, String>>& params, const std::vector<std::pair<String, String>>& headers) {
+    HttpStreamResult result{ false, 0, 0, nullptr };
+
+    const String queryParams = BuildQueryString(params);
+    const String fullUrl = url + queryParams;
+
+    int schemeEnd = fullUrl.indexOf("://");
+    schemeEnd = (schemeEnd >= 0) ? schemeEnd + 3 : 0;
+    int pathStart = fullUrl.indexOf('/', schemeEnd);
+    if (pathStart == -1) pathStart = fullUrl.length();
+
+    String host = fullUrl.substring(schemeEnd, pathStart);
+    String path = fullUrl.substring(pathStart);
+    int port = 80;
+
+    int colonPos = host.indexOf(':');
+    if (colonPos != -1) {
+        port = host.substring(colonPos + 1).toInt();
+        host = host.substring(0, colonPos);
+    }
+
+    WiFiClient* client = new WiFiClient();
+    if (!client->connect(host.c_str(), port)) {
+        result.errorMessage = "Connection failed";
+        Serial.println("[STREAM] Connection failed: " + host);
+        delete client;
+        return result;
+    }
+
+    client->print("GET ");
+    client->print(path);
+    client->println(" HTTP/1.1");
+    client->print("Host: ");
+    client->println(host);
+
+    for (const auto& header : headers) {
+        client->print(header.first);
+        client->print(": ");
+        client->println(header.second);
+    }
+
+    client->println("Connection: close");
+    client->println();
+
+    int statusCode = ReadStatusLine(*client, HTTP_TIMEOUT_MS);
+    if (statusCode == 0) {
+        result.errorMessage = "Timeout or invalid response";
+        client->stop();
+        delete client;
+        return result;
+    }
+    result.statusCode = statusCode;
+
+    int contentLength = ReadHeaders(*client, HTTP_TIMEOUT_MS);
+    Serial.printf("[STREAM] Status=%d CL=%d\r\n", statusCode, contentLength);
+
+    if (statusCode >= 200 && statusCode < 300) {
+        result.success = true;
+        result.contentLength = contentLength;
+        result.client = client;
+    } else {
+        result.success = false;
+        result.errorMessage = "HTTP " + String(statusCode);
+        client->stop();
+        delete client;
+    }
+
     return result;
 }
 

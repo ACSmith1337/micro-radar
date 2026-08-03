@@ -26,17 +26,9 @@ struct SimpleAircraft {
     float groundspeed = 0.0f;  // knots
     float seen = 0.0f;         // seconds since last message at fetch time
     float seenPos = 0.0f;      // seconds since last position update at fetch time
+    float rssi = 0.0f;         // signal strength (negative dBm, 0 = unknown)
     String category = "";     // readsb category (e.g. A1..A7)
     String squawk = "";
-};
-
-// ─── Interpolation storage ───
-struct InterpPosition {
-    float prevLat = 0.0f;
-    float prevLon = 0.0f;
-    float lat = 0.0f;
-    float lon = 0.0f;
-    bool hasPrev = false;
 };
 
 // ─── Drawing state per aircraft ──
@@ -45,6 +37,7 @@ struct DrawPosition {
     int y;
     bool visible;
     uint8_t brightness = 24;  // PPI persistence: 24=max, decays to 0
+    float rssi = 0.0f;        // last known RSSI (for ghost fade duration)
 };
 
 // ─── Trail history: ring buffer of past positions ──
@@ -89,12 +82,14 @@ public:
     bool IsAmber() const;
     bool IsRadial() const;
 
+    // Force an immediate aircraft sync (called from web UI)
+    static void RequestForceSync();
+    static bool HasForceSyncRequested();
+    static bool forceSyncRequested;
+
 #if defined(ARDUINO_ARCH_ESP8266)
     void Draw(LGFX& buf);
 #endif
-
-    // Legacy OpenSky support (stripped from UI)
-    void OpenSky();
 
 private:
     float lat = 0.0f;
@@ -119,9 +114,9 @@ private:
     bool warmupComplete = false;
 
     std::map<String, SimpleAircraft> trackedAircraft;
-    std::map<String, InterpPosition> prevPositions;
     std::map<String, DrawPosition> lastPositions;
     std::map<String, TrailHistory> trailHistories;  // per-aircraft position history
+    std::map<String, float> decayAccumulators;      // per-aircraft decay accumulator
 
     // Drawing
     void DrawRadarGrid() const;
@@ -131,16 +126,16 @@ private:
     void DrawTrail(int cx, int cy, int r, float headC, float headS);
     bool RefreshAircraft();
     void DecayAircraft();
-
-    void UpdateAircraftDisplay();
-    void StorePreviousPositions();
     void ErasePosition(int x, int y, uint8_t radius = 8) const;
     void DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, uint8_t brightness = 24) const;
-    uint16_t FadeColor(uint16_t base, uint8_t level) const;
-
+    void DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, uint8_t brightness, uint16_t overrideColor) const;
+    void UpdateAlertState(bool displayAlerts);
+    void DrawAlertText(bool displayAlerts);
+    void DrawAllAircraft(bool displayAlerts);
     std::pair<int, int> ProjectCoordinateToScreen(float predLat, float predLon) const;
 
     bool FetchLocal();
+    bool FetchAdsblol();
 
     // External references
     ConfigurationWebServer& configServer;

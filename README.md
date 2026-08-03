@@ -8,7 +8,7 @@ An authentic PPI-style radar display for ADS-B data using an ESP8266 and GC9A01 
 - Authentic PPI radar display with enhanced phosphor glow effects
 - Smooth aircraft interpolation between data updates
 - Color-coded aircraft (green/gold for commercial, orange for military)
-- Emergency squawk code alerts (7500, 7600, 7700) with flashing red overlay
+- Emergency squawk code alerts (7500, 7600, 7700, 1200) with flashing red/orange text, blip, and trail — cycles through multiple alerting aircraft
 - Two phosphor color schemes: green (P1) and gold (P4) — toggleable via web UI or button
 - **Two scan modes:** Angular Sweep (rotating beam) and Radial Ping (expanding sonar ring) — toggleable via web UI or button
 - Aircraft trail dots showing track history behind moving targets
@@ -76,6 +76,15 @@ After flashing, the device will create a WiFi access point named "MicroRadar-Set
 - Phosphor color scheme (green P1 or gold P4)
 - Scan mode (Angular Sweep or Radial Ping)
 
+All changes apply instantly — no reboot required. The configuration page is also accessible at the device's IP on your local network (e.g. `http://192.168.1.xxx`).
+
+### Diagnostic Endpoint
+The `/status` page reports runtime diagnostics:
+```
+http://<device-ip>/status
+```
+Returns free heap, max allocatable block, and other memory metrics. Useful for monitoring ESP8266 RAM health.
+
 ## Physical Buttons (Optional)
 Wire two momentary push buttons to toggle settings without the web UI:
 
@@ -108,6 +117,14 @@ A rotating beam sweeps clockwise around the display. Aircraft illuminate to full
 
 ### Radial Ping
 An expanding ring grows from the center outward, illuminating aircraft as it crosses their position. After reaching the edge, the screen clears and pauses before the next ping.
+
+## Aircraft Fade Behavior
+Aircraft blips fade after beam illumination using RSSI-based timing:
+- **Strong signal** (RSSI > -30 dBm): ~8.8 seconds to full fade
+- **Weak signal** (RSSI < -100 dBm): ~4.4 seconds to full fade
+- Linear interpolation between these values based on received signal strength
+
+This mirrors real PPI phosphor persistence — strong returns linger longer than weak ones.
 
 ## Troubleshooting
 - If the display remains blank, check wiring connections

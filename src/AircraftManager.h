@@ -46,6 +46,7 @@ struct DrawPosition {
     int y;
     bool visible;
     uint8_t brightness = 24;  // PPI persistence: 24=max, decays to 0
+    float rssi = 0.0f;        // last known RSSI (for ghost fade duration)
 };
 
 // ─── Trail history: ring buffer of past positions ──
@@ -125,6 +126,7 @@ private:
     std::map<String, InterpPosition> prevPositions;
     std::map<String, DrawPosition> lastPositions;
     std::map<String, TrailHistory> trailHistories;  // per-aircraft position history
+    std::map<String, float> decayAccumulators;      // per-aircraft decay accumulator
 
     // Drawing
     void DrawRadarGrid() const;
@@ -139,6 +141,7 @@ private:
     void StorePreviousPositions();
     void ErasePosition(int x, int y, uint8_t radius = 8) const;
     void DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, uint8_t brightness = 24) const;
+    void DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, uint8_t brightness, uint16_t overrideColor) const;
     uint16_t FadeColor(uint16_t base, uint8_t level) const;
 
     std::pair<int, int> ProjectCoordinateToScreen(float predLat, float predLon) const;

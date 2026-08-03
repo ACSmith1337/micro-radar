@@ -6,6 +6,18 @@
 #include <ESP8266mDNS.h>
 #endif
 
+// Forward declaration for HandleSync
+#include "AircraftManager.h"
+
+// Global log buffer instance
+LogBuffer g_logBuffer;
+
+// Log helper — writes to Serial AND the web-viewable buffer
+void GridLog(const char* msg) {
+    Serial.println(msg);
+    g_logBuffer.log(msg);
+}
+
 // HTML stored in flash
 static const char CONFIG_HTML[] PROGMEM = R"HTML(
 <html>
@@ -193,9 +205,12 @@ static const char CONFIG_HTML[] PROGMEM = R"HTML(
 
                         <div id="result" class="mt-4 px-1 sm:px-10"></div>
                         <div id="sync-status" class="mt-4 px-1 sm:px-10 text-sm" style="color:#aaa;"></div>
-                </div>
-            </form>
-        </fieldset>
+                    </div>
+
+                    <a href="/logs" class="block text-center mt-4 px-4 py-2 border border-green-500 hover:bg-green-500 hover:bg-opacity-10 transition-colors duration-200 text-sm">
+                        View Logs
+                    </a>
+                </fieldset>
 
         <fieldset class="border border-green-700 p-5 w-full max-w-2xl mx-auto sm:m-10 mt-4">
             <legend class="px-2 text-green-400">Display Legend</legend>
@@ -409,6 +424,10 @@ void ConfigurationWebServer::Initialise() {
         request->send(200, "text/plain", "Sync triggered");
     });
 
+    server->on("/logs", HTTP_GET, [&](AsyncWebServerRequest* request) {
+        request->send(200, "text/plain", g_logBuffer.dump());
+    });
+
     server->begin();
 }
 
@@ -422,6 +441,7 @@ static inline void substitutePlaceholders(String& templateStr, const String& key
 void ConfigurationWebServer::HandleRoot() {
     Serial.println("[GET] Handling request to config web server...");
 
+    // Read config values
     prefs.begin("config", true);
     String latitude = prefs.getString("latitude", "");
     String longitude = prefs.getString("longitude", "");
@@ -445,15 +465,10 @@ void ConfigurationWebServer::HandleRoot() {
     prefs.end();
 
     String html;
-
-#if defined(__PROGMEM_TYPES_DEFINED)
     html.reserve(sizeof(CONFIG_HTML));
     for (size_t i = 0; i < sizeof(CONFIG_HTML) - 1; i++) {
         html += (char)pgm_read_byte(CONFIG_HTML + i);
     }
-#else
-    html = String(CONFIG_HTML);
-#endif
 
     substitutePlaceholders(html, "%LATITUDE%", latitude);
     substitutePlaceholders(html, "%LONGITUDE%", longitude);
@@ -475,6 +490,7 @@ void ConfigurationWebServer::HandleRoot() {
     substitutePlaceholders(html, "%SCANMODE_RADIAL%", scanMode == "radial" ? "selected" : "");
 
     server.send(200, "text/html", html);
+    html = String();  // Free heap immediately
 }
 
 void ConfigurationWebServer::HandleSave() {
@@ -544,6 +560,9 @@ void ConfigurationWebServer::Initialise() {
 
     server.on("/", std::bind(&ConfigurationWebServer::HandleRoot, this));
     server.on("/save", std::bind(&ConfigurationWebServer::HandleSave, this));
+    server.on("/sync", std::bind(&ConfigurationWebServer::HandleSync, this));
+    server.on("/logs", std::bind(&ConfigurationWebServer::HandleLogs, this));
+    server.on("/status", std::bind(&ConfigurationWebServer::HandleStatus, this));
 
     server.begin();
     Serial.println("[INFO] Config server listening on port 80");
@@ -551,6 +570,31 @@ void ConfigurationWebServer::Initialise() {
 
 void ConfigurationWebServer::HandleClient() {
     server.handleClient();
+}
+
+void ConfigurationWebServer::HandleSync() {
+    Serial.println("[GET] Sync now requested");
+    AircraftManager::RequestForceSync();
+    server.send(200, "text/plain", "Sync triggered");
+}
+
+void ConfigurationWebServer::HandleLogs() {
+    server.send(200, "text/plain", g_logBuffer.dump());
+}
+
+void ConfigurationWebServer::HandleStatus() {
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+        "Free Heap: %d bytes\n"
+        "Max Free Block: %d bytes\n"
+        "Sketch Size: %d / %d bytes\n"
+        "Uptime: %lu sec\n",
+        ESP.getFreeHeap(),
+        ESP.getMaxFreeBlockSize(),
+        ESP.getSketchSize(),
+        ESP.getFreeSketchSpace(),
+        millis() / 1000);
+    server.send(200, "text/plain", buf);
 }
 
 #endif

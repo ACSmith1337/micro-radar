@@ -8,7 +8,7 @@ An authentic PPI-style radar display for ADS-B data using an ESP8266 and GC9A01 
 - Authentic PPI radar display with enhanced phosphor glow effects
 - Smooth aircraft interpolation between data updates
 - Color-coded aircraft (green/gold for commercial, orange for military)
-- Emergency squawk code alerts (7500, 7600, 7700) with flashing red overlay
+- Emergency squawk code alerts (7500, 7600, 7700, 1200) with flashing red/orange text, blip, and trail — cycles through multiple alerting aircraft
 - Two phosphor color schemes: green (P1) and gold (P4) — toggleable via web UI or button
 - **Two scan modes:** Angular Sweep (rotating beam) and Radial Ping (expanding sonar ring) — toggleable via web UI or button
 - Aircraft trail dots showing track history behind moving targets

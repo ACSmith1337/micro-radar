@@ -53,7 +53,7 @@ namespace JsonParser {
         // ICAO24 hex address
         a.icao24 = ac["hex"].isNull() ? "" : ac["hex"].as<String>();
 
-        // Callsign — pad to 8 chars with spaces (OpenSky convention)
+        // Callsign — pad to 8 chars with spaces (standard convention)
         a.callsign = ac["callsign"].isNull() ? "" : ac["callsign"].as<String>();
 
         // readsb does not provide originCountry

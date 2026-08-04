@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFiManager.h>
+#include "src/PreferencesCompat.h"
 
 #include "src/LGFX.h"
 #include "src/WiFiManagerHelpers.h"
@@ -23,12 +24,62 @@ HttpRequestManager http;
 
 AircraftManager aircraftManager(configServer, http, tft);
 
+// ── Physical buttons ──
+// D6 (GPIO12) = Button 1: Theme toggle (Green ↔ Amber)
+// D4 (GPIO2)  = Button 2: Scan mode toggle (Angular ↔ Radial)
+// NOTE: GPIO16 (D0) is the deep-sleep wake pin — unreliable for INPUT_PULLUP
+constexpr int BTN_THEME_PIN = 12;  // D6
+constexpr int BTN_MODE_PIN = 2;    // D4 (GPIO2)
+static uint32_t lastBtnTheme = 0;
+static uint32_t lastBtnMode = 0;
+static const uint32_t BTN_DEBOUNCE_MS = 300;
 
-#line 26 "/home/hermes/micro-radar/micro-radar.ino"
+#line 36 "/home/hermes/micro-radar/micro-radar.ino"
+static void handleButtons();
+#line 75 "/home/hermes/micro-radar/micro-radar.ino"
 void setup();
-#line 67 "/home/hermes/micro-radar/micro-radar.ino"
+#line 122 "/home/hermes/micro-radar/micro-radar.ino"
 void loop();
-#line 26 "/home/hermes/micro-radar/micro-radar.ino"
+#line 36 "/home/hermes/micro-radar/micro-radar.ino"
+static void handleButtons()
+{
+    // Button 1: Theme toggle
+    if (digitalRead(BTN_THEME_PIN) == LOW) {
+        uint32_t now = millis();
+        if ((uint32_t)(now - lastBtnTheme) < BTN_DEBOUNCE_MS) return;
+        lastBtnTheme = now;
+
+        bool nextAmber = !aircraftManager.IsAmber();  // Toggle current state directly
+        {
+            Preferences prefs;
+            prefs.begin("config", false);
+            prefs.putString("phosphor", nextAmber ? "amber" : "green");
+            prefs.end();
+        }
+        aircraftManager.ApplyThemeChange(nextAmber);
+        Serial.printf("[BTN] Theme: %s\n", nextAmber ? "amber" : "green");
+        return;
+    }
+
+    // Button 2: Scan mode toggle
+    if (digitalRead(BTN_MODE_PIN) == LOW) {
+        uint32_t now = millis();
+        if ((uint32_t)(now - lastBtnMode) < BTN_DEBOUNCE_MS) return;
+        lastBtnMode = now;
+
+        bool nextRadial = !aircraftManager.IsRadial();  // Toggle current state
+        {
+            Preferences prefs;
+            prefs.begin("config", false);
+            prefs.putString("scanmode", nextRadial ? "radial" : "angular");
+            prefs.end();
+        }
+        aircraftManager.ApplyModeChange(nextRadial);
+        Serial.printf("[BTN] Scan mode: %s\n", nextRadial ? "radial" : "angular");
+    }
+}
+
+
 void setup()
 {
     Serial.begin(115200);
@@ -45,6 +96,12 @@ void setup()
     // ESP8266 D1 Mini: pin D1 (GPIO5) = backlight
     pinMode(5, OUTPUT);
     digitalWrite(5, HIGH);
+
+    // Button pins (active LOW with internal pull-up)
+    pinMode(BTN_THEME_PIN, INPUT_PULLUP);
+    pinMode(BTN_MODE_PIN, INPUT_PULLUP);
+    // GPIO2 (D4) shares the built-in LED — disable LED to avoid interference
+    pinMode(2, INPUT_PULLUP);
 #endif
 
     // establish WiFi connection
@@ -72,6 +129,14 @@ void setup()
 
 void loop()
 {
+    // Handle physical buttons
+    handleButtons();
+
+    // Check if web UI requested a config reload
+    if (configServer.HasReloadRequested()) {
+        aircraftManager.ReloadDisplayConfig();
+    }
+
     // Update aircraft data + draw incremental updates (scanline + aircraft)
     aircraftManager.Update();
 

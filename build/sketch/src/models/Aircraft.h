@@ -8,7 +8,7 @@
 
 #include "../JsonParser.h"
 
-// Maps to OpenSky /states/all response
+// Maps to readsb/dump1090 and ADSB.lol /v2 response
 // Field indices match the documented state vector array order
 struct Aircraft {
     String icao24;          // [0]  unique ICAO 24-bit transponder address

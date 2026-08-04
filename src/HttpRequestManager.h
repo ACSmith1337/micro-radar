@@ -40,7 +40,7 @@ public:
     HttpRequestManager() = default;
     ~HttpRequestManager() = default;
 
-    [[nodiscard]] HttpResult Get(const String& url, const std::vector<std::pair<String, String>>& params = {}, const std::vector<std::pair<String, String>>& headers = {});
+    [[nodiscard]] HttpResult Get(const String& url, const std::vector<std::pair<String, String>>& params = {}, const std::vector<std::pair<String, String>>& headers = {}, int timeout_ms = 0);
     [[nodiscard]] HttpResult Post(const String& url, const String& body = "", const std::vector<std::pair<String, String>>& headers = {});
 
     // Streaming GET: returns client positioned at body start for direct deserialization

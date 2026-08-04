@@ -159,6 +159,12 @@ micro-radar.ino.cpp.o: \
  /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/ESP8266WiFi/src/include/slist.h \
  /home/hermes/Arduino/libraries/WiFiManager/wm_strings_en.h \
  /home/hermes/Arduino/libraries/WiFiManager/wm_consts_en.h \
+ /home/hermes/micro-radar/build/sketch/src/PreferencesCompat.h \
+ /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/LittleFS/src/LittleFS.h \
+ /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/FSImpl.h \
+ /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/flash_hal.h \
+ /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/LittleFS/src/../lib/littlefs/lfs.h \
+ /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/LittleFS/src/../lib/littlefs/lfs_util.h \
  /home/hermes/micro-radar/build/sketch/src/LGFX.h \
  /home/hermes/Arduino/libraries/LovyanGFX/src/LovyanGFX.hpp \
  /home/hermes/Arduino/libraries/LovyanGFX/src/lgfx/v1_init.hpp \
@@ -246,12 +252,6 @@ micro-radar.ino.cpp.o: \
  /home/hermes/Arduino/libraries/LovyanGFX/src/lgfx/v1/touch/Touch_RA8875.hpp \
  /home/hermes/micro-radar/build/sketch/src/WiFiManagerHelpers.h \
  /home/hermes/micro-radar/build/sketch/src/ConfigurationWebServer.h \
- /home/hermes/micro-radar/build/sketch/src/PreferencesCompat.h \
- /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/LittleFS/src/LittleFS.h \
- /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/FSImpl.h \
- /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/cores/esp8266/flash_hal.h \
- /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/LittleFS/src/../lib/littlefs/lfs.h \
- /home/hermes/.arduino15/packages/esp8266/hardware/esp8266/3.1.2/libraries/LittleFS/src/../lib/littlefs/lfs_util.h \
  /home/hermes/micro-radar/build/sketch/src/HttpRequestManager.h \
  /home/hermes/micro-radar/build/sketch/src/AircraftManager.h \
  /home/hermes/micro-radar/build/sketch/src/models/Aircraft.h \

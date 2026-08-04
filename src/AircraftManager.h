@@ -40,16 +40,30 @@ struct DrawPosition {
     float rssi = 0.0f;        // last known RSSI (for ghost fade duration)
 };
 
-// ─── Trail history: ring buffer of past positions ──
-constexpr int TRAIL_HISTORY_MAX = 120;  // ~20 min at 10s fetch = 120 points
-struct TrailPoint {
+// ─── Airport marker ──
+struct AirportMarker {
+    float lat;
+    float lon;
+    int sx;        // screen x
+    int sy;        // screen y
+    bool onScreen;
+    AirportMarker() : lat(0), lon(0), sx(0), sy(0), onScreen(false) {}
+    AirportMarker(float l, float o, int x, int y, bool on) : lat(l), lon(o), sx(x), sy(y), onScreen(on) {}
+};
+
+// ─── Trail history: waypoint-compressed position history ──
+// Only store points where direction changes meaningfully (>15°).
+// Typical aircraft: 3-5 waypoints per session vs 120 raw points.
+constexpr int TRAIL_WAYPOINTS_MAX = 16;
+constexpr float TRAIL_TURN_THRESHOLD = 15.0f;  // degrees — minimum heading change to store a new waypoint
+struct TrailWaypoint {
     int x;
     int y;
     uint32_t timestamp;  // millis() when recorded
 };
 
 struct TrailHistory {
-    TrailPoint points[TRAIL_HISTORY_MAX];
+    TrailWaypoint points[TRAIL_WAYPOINTS_MAX];
     int count = 0;
     int head = 0;  // next write position
 };
@@ -112,11 +126,21 @@ private:
     uint32_t initialSyncLastAttempt = 0;
     uint32_t warmupStartMs = 0;
     bool warmupComplete = false;
+    bool airportsFetched = false;
+    uint32_t airportsFetchRetry = 0;    // millis of next retry
+    bool fadeInComplete = false;        // Fade-in finished
+    uint8_t fadeInRow = 0;              // Current reveal row during fade-in
+    uint32_t lastFadeIn = 0;            // Last fade-in tick
 
     std::map<String, SimpleAircraft> trackedAircraft;
     std::map<String, DrawPosition> lastPositions;
     std::map<String, TrailHistory> trailHistories;  // per-aircraft position history
     std::map<String, float> decayAccumulators;      // per-aircraft decay accumulator
+
+    // Airport markers
+    std::vector<AirportMarker> airports;
+    void FetchAirports(int timeout_ms = 30000);
+    void DrawAirportMarkers() const;
 
     // Drawing
     void DrawRadarGrid() const;

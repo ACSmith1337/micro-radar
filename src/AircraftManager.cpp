@@ -203,12 +203,16 @@ void AircraftManager::Initialise()
     initialSyncLastAttempt = 0;
     warmupStartMs = millis();
     warmupComplete = false;
+    airportsFetched = false;
+    airportsFetchRetry = 0;
+    fadeInComplete = false;
+    fadeInRow = 0;
+    lastFadeIn = 0;
 
     tft.fillScreen(CLR_BG);
-    DrawRadarGrid();
-    tft.setTextColor(PalRingBright(useAmber));
-    tft.setTextSize(1);
-    tft.drawCentreString("SYNC READSB...", 120, 112, 1);
+    tft.setTextColor(PalRingBright(useAmber), CLR_BG);
+    tft.setTextSize(2);
+    tft.drawCentreString("RADAR WARMUP", 120, 112, 1);
 }
 
 // ── Live config reload (no restart) ──
@@ -337,33 +341,153 @@ void AircraftManager::Update()
     if (!initialSyncComplete) {
         uint32_t now = millis();
 
-        // Show warmup text once on entry
-        static bool warmupShown = false;
-        if (!warmupShown) {
-            warmupShown = true;
-            tft.fillScreen(CLR_BG);
-            DrawRadarGrid();
-            DrawRadarLabels();
+        // Static warmup text
+        static uint32_t lastBlink = 0;
+        if (now - lastBlink >= 1000) {
+            lastBlink = now;
+            tft.fillRect(50, 100, 140, 24, CLR_BG);
             tft.setTextColor(PalRingBright(useAmber), CLR_BG);
             tft.setTextSize(2);
-            tft.drawCentreString("RADAR WARMUP", 120, 108, 1);
+            tft.drawCentreString("RADAR WARMUP", 120, 112, 1);
         }
 
+        // Try aircraft sync every 1.5s
         if ((now - initialSyncLastAttempt) >= 1500 || (now - warmupStartMs) >= 10000) {
             initialSyncLastAttempt = now;
             if (RefreshAircraft() || (now - warmupStartMs) >= 10000) {
                 initialSyncComplete = true;
                 lastRotation = now;
-                tft.fillScreen(CLR_BG);
-                DrawRadarGrid();
+
                 if ((now - warmupStartMs) >= 10000) {
                     GridLog("[RADAR] Warmup timeout, starting sweep without sync");
                 } else {
                     GridLog("[RADAR] Initial sync complete, starting sweep");
                 }
+
+                // Beam reveal: screen is already black. Sweep a thin bright beam down,
+                // drawing radar rows as we go.
+                fadeInComplete = false;
+                fadeInRow = 0;
+                lastFadeIn = now;
+
+                return;  // Let Update() handle reveal next calls
             }
         }
         return;
+    }
+
+    // ── Beam reveal ──
+    if (!fadeInComplete) {
+        uint32_t now = millis();
+        if (now - lastFadeIn >= 12) {
+            lastFadeIn = now;
+            if (fadeInRow < 240) {
+                int y = fadeInRow;
+                int cx = 120, cy = 120;
+                uint16_t ringClr = PalRing(useAmber);
+                uint16_t ringBrightClr = PalRingBright(useAmber);
+                uint16_t crossClr = PalCrosshair(useAmber);
+                uint16_t scanClr = PalScan(useAmber);
+
+                tft.startWrite();
+
+                // ── Helper: draw radar content for one row ──
+                auto drawRow = [&](int row) {
+                    // Circles
+                    for (int r : {RING_OUTER_PX, RING_MID_PX, RING_INNER_PX}) {
+                        int dy = row - cy;
+                        if (abs(dy) <= r) {
+                            int dx = (int)round(sqrtf((float)(r * r - dy * dy)));
+                            int x1 = cx - dx, x2 = cx + dx;
+                            if (x1 < 0) x1 = 0;
+                            if (x2 > 239) x2 = 239;
+                            if (x1 <= x2) {
+                                tft.drawPixel(x1, row, ringClr);
+                                tft.drawPixel(x2, row, ringClr);
+                            }
+                        }
+                    }
+                    // Crosshairs
+                    if (crossClr != CLR_BG) {
+                        tft.drawPixel(cx, row, crossClr);
+                        tft.drawPixel(cx + 1, row, crossClr);
+                        if (row == cy) tft.drawFastHLine(0, row, 240, crossClr);
+                    }
+                    // Tick marks (30° intervals, skip cardinal)
+                    for (int i = 0; i < 12; i++) {
+                        if (i == 0 || i == 3 || i == 6 || i == 9) continue;
+                        float tdx = TICK_DIRS[i * 2], tdy = TICK_DIRS[i * 2 + 1];
+                        int tx1 = cx + (int)(tdx * 106), ty1 = cy + (int)(tdy * 106);
+                        int tx2 = cx + (int)(tdx * 114), ty2 = cy + (int)(tdy * 114);
+                        int tMinY = min(ty1, ty2), tMaxY = max(ty1, ty2);
+                        if (row >= tMinY && row <= tMaxY) {
+                            int tx = (ty2 == ty1) ? tx1 : tx1 + (int)((float)(tx2 - tx1) * (row - ty1) / (ty2 - ty1));
+                            tft.drawPixel(tx, row, ringClr);
+                        }
+                    }
+                    // North bright tick (y=4..14)
+                    if (row >= 4 && row <= 14) tft.drawPixel(cx, row, ringBrightClr);
+                    // Labels
+                    tft.setTextColor(ringBrightClr);
+                    tft.setTextSize(1);
+                    if (row >= 0 && row <= 7) { tft.drawCentreString("N", cx, 2, 1); tft.drawCentreString("N", cx + 1, 2, 1); }
+                    if (row >= 226 && row <= 235) { tft.drawCentreString("S", cx, 228, 1); tft.drawCentreString("S", cx + 1, 228, 1); }
+                    if (row >= 115 && row <= 124) { tft.drawCentreString("E", 236, 117, 1); tft.drawCentreString("E", 237, 117, 1); tft.drawCentreString("W", 4, 117, 1); tft.drawCentreString("W", 5, 117, 1); }
+                    if (row >= 12 && row <= 19) tft.drawString(ringLabelOuter, cx + 6, 14, 1);
+                    if (row >= 49 && row <= 56) tft.drawString(ringLabelMid, cx + 6, 51, 1);
+                    if (row >= 86 && row <= 93) tft.drawString(ringLabelInner, cx + 6, 88, 1);
+                    // Airport markers
+                    for (const auto& ap : airports) {
+                        if (ap.onScreen && ap.sy >= row - 3 && ap.sy <= row + 2) {
+                            tft.drawPixel(ap.sx, ap.sy, 0xFFFF);
+                            tft.drawPixel(ap.sx - 1, ap.sy - 1, 0xFFFF);
+                            tft.drawPixel(ap.sx + 1, ap.sy - 1, 0xFFFF);
+                            tft.drawPixel(ap.sx - 2, ap.sy - 2, 0xFFFF);
+                            tft.drawPixel(ap.sx + 2, ap.sy - 2, 0xFFFF);
+                            tft.drawPixel(ap.sx, ap.sy - 3, 0xFFFF);
+                            tft.drawPixel(ap.sx - 1, ap.sy + 1, 0xFFFF);
+                            tft.drawPixel(ap.sx + 1, ap.sy + 1, 0xFFFF);
+                            tft.drawPixel(ap.sx, ap.sy + 2, 0xFFFF);
+                        }
+                    }
+                };
+
+                // ── Erase beam from previous row, redraw content ──
+                if (y > 0) {
+                    int py = y - 1;
+                    tft.drawFastHLine(0, py, 240, CLR_BG);
+                    drawRow(py);
+                }
+
+                // ── Draw content for current row ──
+                drawRow(y);
+
+                // ── Beam line on top ──
+                tft.drawFastHLine(0, y, 240, scanClr);
+
+                tft.endWrite();
+
+                fadeInRow++;
+            } else {
+                // Reveal complete — redraw clean
+                fadeInComplete = true;
+                DrawRadarGrid();
+                DrawRadarLabels();
+                DrawAirportMarkers();
+            }
+        }
+        return;
+    }
+
+    // ── Fetch airports if not yet done (retry on failure) ──
+    if (!airportsFetched) {
+        uint32_t now = millis();
+        if (airportsFetchRetry == 0 || now >= airportsFetchRetry) {
+            FetchAirports(10000);  // 10s timeout, retry every 60s on failure
+            if (!airportsFetched) {
+                airportsFetchRetry = now + 60000;
+            }
+        }
     }
 
     // ── Fetch once per rotation (or more often after failures) ──
@@ -438,14 +562,46 @@ bool AircraftManager::RefreshAircraft()
         int x = proj.first, y = proj.second;
         bool on = (x > 0 && x < 239 && y > 0 && y < 239);
 
-        // ── Record trail history ──
+        // ── Record trail history (waypoint-compressed) ──
         if (on && displayTrailDots) {
             auto& hist = trailHistories[icao];
-            hist.points[hist.head].x = x;
-            hist.points[hist.head].y = y;
-            hist.points[hist.head].timestamp = millis();
-            hist.head = (hist.head + 1) % TRAIL_HISTORY_MAX;
-            if (hist.count < TRAIL_HISTORY_MAX) hist.count++;
+            // Only store a new waypoint if direction changed significantly
+            bool shouldRecord = false;
+            if (hist.count == 0) {
+                shouldRecord = true;  // First point always recorded
+            } else if (hist.count == 1) {
+                shouldRecord = true;  // Second point needed to establish direction
+            } else {
+                // Check if heading changed enough from the last two waypoints
+                int tail = (hist.head - hist.count + TRAIL_WAYPOINTS_MAX) % TRAIL_WAYPOINTS_MAX;
+                int prev = (hist.head - 1 + TRAIL_WAYPOINTS_MAX) % TRAIL_WAYPOINTS_MAX;
+                const auto& p0 = hist.points[tail];
+                const auto& p1 = hist.points[prev];
+                // Direction from p0→p1
+                int dx1 = p1.x - p0.x;
+                int dy1 = p1.y - p0.y;
+                // Direction from p1→new
+                int dx2 = x - p1.x;
+                int dy2 = y - p1.y;
+                // Cross product magnitude = |v1|×|v2|×sin(θ)
+                // Dot product = |v1|×|v2|×cos(θ)
+                // sin²(15°) ≈ 0.06699 → compare cross² ≥ 0.067 × dot²
+                // Use fixed-point: 67/1000 to avoid float
+                long cross = (long)dx1 * dy2 - (long)dy1 * dx2;
+                long dot = (long)dx1 * dx2 + (long)dy1 * dy2;
+                if (cross < 0) cross = -cross;
+                // |cross| / |dot| ≥ tan(15°) ≈ 0.268 → cross × 1000 ≥ dot × 268
+                if (cross * 1000 >= (long)abs(dot) * 268) {
+                    shouldRecord = true;
+                }
+            }
+            if (shouldRecord) {
+                hist.points[hist.head].x = x;
+                hist.points[hist.head].y = y;
+                hist.points[hist.head].timestamp = millis();
+                hist.head = (hist.head + 1) % TRAIL_WAYPOINTS_MAX;
+                if (hist.count < TRAIL_WAYPOINTS_MAX) hist.count++;
+            }
         }
 
         auto lpIt = lastPositions.find(icao);
@@ -704,29 +860,33 @@ void AircraftManager::DrawRadarFrame()
         tft.drawLine(x1, y1, x2, y2, CLR_BG);
     }
 
-    // ── Grid + labels ──
+    // ── Grid + labels + airports ──
     DrawRadarGrid();
     DrawRadarLabels();
+    DrawAirportMarkers();
 
     // ── PPI beam-hit refresh ──
     float touchHalfAngle = delta + (DEG1 * 2.0f);
     if (touchHalfAngle < (DEG1 * 4.0f)) touchHalfAngle = DEG1 * 4.0f;
     if (touchHalfAngle > (DEG1 * 12.0f)) touchHalfAngle = DEG1 * 12.0f;
+    // Avoid sqrtf: compare (dot·d)² >= d² × cos² instead of dot >= cos
     float beamTouchCos = cosf(touchHalfAngle);
+    float beamTouchCos2 = beamTouchCos * beamTouchCos;  // cos²(θ)
     for (auto& [icao, lp] : lastPositions) {
         int vx = lp.x - cx;
         int vy = cy - lp.y;
         float d2 = (float)(vx * vx + vy * vy);
         if (d2 < 16.0f) continue;
 
-        float invD = 1.0f / sqrtf(d2);
-        float ux = vx * invD;
-        float uy = vy * invD;
-        float dotNow  = ux * headC     + uy * headS;
-        float dotPrev = ux * prevHeadC + uy * prevHeadS;
+        // Dot product of (vx,vy) with beam directions
+        float dotNow  = vx * headC     + vy * headS;
+        float dotPrev = vx * prevHeadC + vy * prevHeadS;
+        // Only consider aircraft in front of the beam (positive dot)
         float dot = (dotNow > dotPrev) ? dotNow : dotPrev;
+        if (dot < 0) continue;
+        float dot2 = dot * dot;
 
-        if (dot >= beamTouchCos) {
+        if (dot2 >= d2 * beamTouchCos2) {
             lp.brightness = BRIGHTNESS_MAX;
             lp.visible = true;
             decayAccumulators[icao] = 0.0f;
@@ -752,14 +912,17 @@ void AircraftManager::DrawRadarFrame()
 void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
 {
     constexpr float STEP = TRAIL_STEP_DEG * 0.0174533f;
+    constexpr float STEP_C = 0.9986295f;  // cos(3°) precomputed
+    constexpr float STEP_S = 0.0523360f;  // sin(3°) precomputed
+    (void)STEP;  // kept for reference
     const uint16_t* gradient = PalTrailGradient(useAmber);
 
     float prevC = headC;
     float prevS = headS;
 
     for (int i = 0; i < TRAIL_SEGMENTS; i++) {
-        float segC = prevC * cosf(STEP) - prevS * sinf(STEP);
-        float segS = prevS * cosf(STEP) + prevC * sinf(STEP);
+        float segC = prevC * STEP_C - prevS * STEP_S;
+        float segS = prevS * STEP_C + prevC * STEP_S;
         uint16_t color = gradient[i];
         tft.fillTriangle(cx, cy,
             cx + (int)(prevC * r), cy - (int)(prevS * r),
@@ -788,11 +951,17 @@ void AircraftManager::DrawRadarPing(int cx, int cy, int r)
             pingRadius = (uint8_t)(progress * PING_MAX_RADIUS);
 
             // Hit detection: recharge all aircraft when ring crosses their distance
+            // Avoid sqrtf: compare d² against (r±3)²
+            int rMin = pingRadius - 3;
+            int rMax = pingRadius + 3;
+            if (rMin < 0) rMin = 0;
+            int rMin2 = rMin * rMin;
+            int rMax2 = rMax * rMax;
             for (auto& [icao, lp] : lastPositions) {
                 int vx = lp.x - cx;
                 int vy = cy - lp.y;
-                float dist = sqrtf((float)(vx * vx + vy * vy));
-                if (dist > 0 && abs((int)dist - pingRadius) <= 3) {
+                int d2 = vx * vx + vy * vy;
+                if (d2 >= rMin2 && d2 <= rMax2) {
                     lp.brightness = BRIGHTNESS_MAX;
                     lp.visible = true;  // Re-illuminate faded aircraft
                     decayAccumulators[icao] = 0.0f;  // Reset decay accumulator
@@ -822,9 +991,10 @@ void AircraftManager::DrawRadarPing(int cx, int cy, int r)
         tft.drawCircle(cx, cy, prevRadius + 2, CLR_BG);
     }
 
-    // Redraw grid + labels every frame so ring erase doesn't corrupt them
+    // Redraw grid + labels + airports every frame so ring erase doesn't corrupt them
     DrawRadarGrid();
     DrawRadarLabels();
+    DrawAirportMarkers();
 
     // ── Draw single ring at current radius (3px thick, no persistence) ──
     if (pingPhase == 0 && pingRadius > 0) {
@@ -965,10 +1135,10 @@ void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, u
                 uint32_t now = millis();
                 // Build list of valid trail points (not expired)
                 struct TrailPt { int x, y; uint8_t bright; };
-                TrailPt pts[TRAIL_HISTORY_MAX];
+                TrailPt pts[TRAIL_WAYPOINTS_MAX];
                 int pCount = 0;
                 for (int n = 0; n < hist.count; n++) {
-                    int idx = (hist.head - hist.count + n + TRAIL_HISTORY_MAX) % TRAIL_HISTORY_MAX;
+                    int idx = (hist.head - hist.count + n + TRAIL_WAYPOINTS_MAX) % TRAIL_WAYPOINTS_MAX;
                     const auto& tp = hist.points[idx];
                     float ageSec = (float)(now - tp.timestamp) / 1000.0f;
                     float fade = 1.0f - (ageSec / 600.0f);
@@ -1309,4 +1479,78 @@ bool AircraftManager::FetchAdsblol()
     Serial.println("[FETCH] ADSB.lol: streaming not available on this platform");
     return false;
 #endif
+}
+
+// ── Fetch airports from Overpass API (HTTP) ──
+void AircraftManager::FetchAirports(int timeout_ms)
+{
+    if (lat == 0.0f || lon == 0.0f || rad <= 0.001f) {
+        return;
+    }
+
+    // Convert range to meters (Overpass uses meters)
+    int rangeM = (int)(rad * 185200.0f);
+    if (rangeM < 1000) rangeM = 1000;
+    if (rangeM > 500000) rangeM = 500000;
+
+    // Build Overpass query — URL-encoded GET
+    // [out:json];node["aeroway"="aerodrome"](around:RANGE,LAT,LON);out center;
+    String url = "http://overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%3Bnode%5B%22aeroway%22%3D%22aerodrome%22%5D%28around%3A" +
+                 String(rangeM) + "," + String(lat, 6) + "," + String(lon, 6) +
+                 "%29%3Bout%20center%3B";
+
+    HttpResult result = http.Get(url);
+    if (!result.success) {
+        Serial.printf("[AIRPORTS] HTTP failed: status=%d\n", result.statusCode);
+        return;
+    }
+
+    // Parse JSON — static document to avoid fragmentation
+    static StaticJsonDocument<8192> doc;
+    doc.clear();
+    DeserializationError err = deserializeJson(doc, result.response);
+    if (err) {
+        Serial.printf("[AIRPORTS] JSON parse error: %s\n", err.c_str());
+        doc.clear();
+        return;
+    }
+
+    airports.clear();
+    auto elements = doc["elements"];
+    if (!elements.is<JsonArray>()) {
+        doc.clear();
+        return;
+    }
+
+    int onScreen = 0;
+    for (int i = 0; i < elements.size(); i++) {
+        auto item = elements[i];
+        float latVal = item["lat"] | 0.0f;
+        float lonVal = item["lon"] | 0.0f;
+        if (latVal == 0.0f && lonVal == 0.0f) continue;
+
+        auto proj = ProjectCoordinateToScreen(latVal, lonVal);
+        int sx = proj.first;
+        int sy = proj.second;
+        bool on = (sx > 0 && sx < 239 && sy > 0 && sy < 239);
+        if (on) onScreen++;
+
+        airports.push_back(AirportMarker(latVal, lonVal, sx, sy, on));
+    }
+
+    doc.clear();
+    Serial.printf("[AIRPORTS] Loaded %d airports (%d on-screen)\n", airports.size(), onScreen);
+}
+
+// ── Draw airport markers on the grid ──
+void AircraftManager::DrawAirportMarkers() const
+{
+    uint16_t color = 0xFFFF;  // White
+    for (const auto& ap : airports) {
+        if (!ap.onScreen) continue;
+        // Draw Y shape (runway symbol)
+        tft.drawLine(ap.sx, ap.sy - 3, ap.sx, ap.sy, color);        // Vertical stem
+        tft.drawLine(ap.sx, ap.sy, ap.sx - 2, ap.sy + 3, color);   // Left branch
+        tft.drawLine(ap.sx, ap.sy, ap.sx + 2, ap.sy + 3, color);   // Right branch
+    }
 }

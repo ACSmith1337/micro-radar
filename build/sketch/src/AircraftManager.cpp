@@ -1,59 +1,67 @@
 #line 1 "/home/hermes/micro-radar/src/AircraftManager.cpp"
 #include "AircraftManager.h"
 
+#include "ConfigurationWebServer.h"
 #include <ArduinoJson.h>
 #include <algorithm>
 #include <cmath>
 
-// ─── P1 green phosphor CRT (RGB565 — muted, darker green) ──
-// RGB565 = RRRR RGGG GGGB BBBB → pure green = xxx0 xxx1 111x xxxx
-// Muted green: lower G values, slight red for CRT warmth
-constexpr uint16_t CLR_BG          = 0x0000;       // Black
-constexpr uint16_t CLR_RING        = 0x0140;       // Dim muted green (R=0 G=10 B=0)
-constexpr uint16_t CLR_RING_BRIGHT = 0x02E0;       // Brighter green labels
-constexpr uint16_t CLR_SCAN        = 0x07FF;       // Bright green scan line for visible PPI sweep (max brightness)
-constexpr uint16_t CLR_GLOW        = 0x05A0;       // Scan glow
-constexpr uint16_t CLR_TRAIL       = 0x0320;       // Phosphor fade
-constexpr uint16_t CLR_CROSSHAIR   = 0x00A0;       // Barely visible
-constexpr uint16_t CLR_COMMERIAL   = 0x05E0;       // Civilian green (darker than scan line)
-constexpr uint16_t CLR_MILITARY    = 0xF800;       // Red
-constexpr uint16_t CLR_UNKNOWN     = 0x0520;       // Dark green
-constexpr uint16_t CLR_GLOW_COMM   = 0x03E0;       // Commercial aircraft glow
-constexpr uint16_t CLR_GLOW_MIL    = 0xFC00;       // Military aircraft glow
+// ─── Phosphor palettes (RGB565) ───
+// Green P1 phosphor (P1 is actually yellowish-green CRT)
+constexpr uint16_t CLR_RING_G        = 0x0140;       // R:0  G:10 B:0
+constexpr uint16_t CLR_RING_BRIGHT_G = 0x07E0;       // R:0  G:63 B:0 (max brightness labels)
+constexpr uint16_t CLR_SCAN_G        = 0x07E0;       // R:0  G:63 B:0
+constexpr uint16_t CLR_GLOW_G        = 0x05A0;       // R:0  G:42 B:0
+constexpr uint16_t CLR_CROSSHAIR_G   = 0x00A0;       // R:0  G:5  B:0
+constexpr uint16_t CLR_COMMERIAL_G   = 0x05E0;       // R:0  G:47 B:0
+constexpr uint16_t CLR_GLOW_COMM_G   = 0x03E0;       // R:0  G:31 B:0
+
+// Gold P4 phosphor
+constexpr uint16_t CLR_RING_A        = 0x5200;       // R:10 G:32 B:0 (dark gold ring)
+constexpr uint16_t CLR_RING_BRIGHT_A = 0xE720;       // R:28 G:44 B:0 (bright gold labels)
+constexpr uint16_t CLR_SCAN_A        = 0xF720;       // R:31 G:44 B:0 (gold scan line)
+constexpr uint16_t CLR_GLOW_A        = 0x7380;       // R:14 G:28 B:0
+constexpr uint16_t CLR_CROSSHAIR_A   = 0x0000;       // Invisible (no crosshairs in amber)
+constexpr uint16_t CLR_COMMERIAL_A   = 0xE720;       // Bright gold aircraft (match labels)
+constexpr uint16_t CLR_GLOW_COMM_A   = 0x6180;       // R:12 G:20 B:0
+
+// Shared
+constexpr uint16_t CLR_BG            = 0x0000;
+constexpr uint16_t CLR_MILITARY      = 0xFD20;       // Bright orange (R:31 G:21 B:0)
+constexpr uint16_t CLR_GLOW_MIL      = 0xF608;       // Dim orange glow
+constexpr uint16_t CLR_UNKNOWN       = 0x0520;
+constexpr uint16_t CLR_ALERT         = 0xF800;       // Red - emergency squawk only
 
 // ─── Timing ───
-constexpr uint32_t SCAN_INTERVAL   = 30;           // ~33fps for smoother sweep on ESP8266 (increased from 40ms)
-constexpr uint32_t ROTATION_MS     = 10000;        // 1 full sweep = 10s
-constexpr uint32_t FETCH_DEFAULT   = ROTATION_MS;  // fetch at each rotation
-constexpr uint32_t DECAY_INTERVAL_MS = 250;        // 24 levels @ 250ms = ~6s fade, more responsive (decreased from 300ms)
-constexpr uint32_t WARMUP_MS       = 10000;        // startup warm-up screen before first sync
-constexpr int      MAX_AIRCRAFT    = 24;           // draw/load protection
-constexpr int      MAX_RESP_BYTES  = 8192;         // heap protection
-constexpr float    SCAN_SPEED      = (6.2831853f / ROTATION_MS);  // exact 1 rev / 10s
-constexpr uint8_t  AIRCRAFT_ERASE_RADIUS = 14;     // tighter erase to reduce background disturbance
-constexpr uint8_t  BRIGHTNESS_MAX  = 24;           // smoother phosphor persistence ceiling
+constexpr uint32_t SCAN_INTERVAL     = 30;           // ~33fps for smoother sweep
+constexpr uint32_t ROTATION_MS       = 10000;        // 1 full sweep = 10s (configurable at runtime)
+constexpr uint32_t FETCH_DEFAULT     = ROTATION_MS;  // fetch at each rotation
+constexpr uint32_t DECAY_INTERVAL_MS = 350;          // decay tick rate
+constexpr uint32_t WARMUP_MS         = 10000;        // startup warm-up screen
+constexpr int      MAX_AIRCRAFT      = 48;           // draw/load protection
+constexpr int      MAX_RESP_BYTES    = 8192;         // heap protection
+constexpr float    SCAN_SPEED        = (6.2831853f / ROTATION_MS);
+constexpr uint8_t  AIRCRAFT_ERASE_RADIUS = 18;  // Cover icon + glow + trail dots
+constexpr uint8_t  BRIGHTNESS_MAX    = 24;
+// Variable fade: strong signals last ~9.5s (24 steps * 350ms * 1.12), weak ~5.5s (24 steps * 350ms * 0.66)
+// Decay step = 1 for strong (quality > 0.5), 2 for weak (quality <= 0.5)
 
-// Ring geometry (outer is max range; inner rings are ~66% and ~33%).
-constexpr int      RING_OUTER_PX   = 110;
-constexpr int      RING_MID_PX     = (RING_OUTER_PX * 2) / 3;
-constexpr int      RING_INNER_PX   = (RING_OUTER_PX * 1) / 3;
+// Ring geometry
+constexpr int      RING_OUTER_PX     = 110;
+constexpr int      RING_MID_PX       = (RING_OUTER_PX * 2) / 3;
+constexpr int      RING_INNER_PX     = (RING_OUTER_PX * 1) / 3;
 
-// ── Trail: 30° visual, 32° total with 2° black safety margin ──
-// 10 segments spanning 32° total wedge.
-// Tail-side segments are black, head-side segments are green.
-constexpr int   TRAIL_SEGMENTS    = 10;
-constexpr float TRAIL_STEP_DEG    = (32.0f / TRAIL_SEGMENTS);
-// Precomputed cos(32°) and sin(32°) for tail calculation
-constexpr float TRAIL_TAIL_COS    = 0.8480481f;     // cos(32°)
-constexpr float TRAIL_TAIL_SIN    = 0.5299193f;     // sin(32°)
+// ── Trail: 6° black erase wedge (no gradient shadow) ──
+// 2 black segments behind the beam clear old pixels.
+// No gradient ramp = no trailing shadow hiding aircraft.
+constexpr int   TRAIL_SEGMENTS    = 2;
+constexpr float TRAIL_STEP_DEG    = 3.0f;
 
-// Phosphor green gradient for 10 segments: black tail → green head.
-// Enhanced gradient with more noticeable steps for realistic phosphor bloom
-constexpr uint16_t TRAIL_GRADIENT[] = {
-    0x0000, 0x0000, 0x0020, 0x0040,
-    0x00A0, 0x0140, 0x0220, 0x0360,
-    0x04E0, 0x06C0
-};  // 10 entries = TRAIL_SEGMENTS — visible black→green phosphor ramp
+// Green phosphor gradient: 2 black erase, no shadow
+constexpr uint16_t TRAIL_GRADIENT_G[] = { 0x0000, 0x0000 };
+
+// Amber phosphor gradient: 2 black erase, no shadow
+constexpr uint16_t TRAIL_GRADIENT_A[] = { 0x0000, 0x0000 };
 
 // ── Precomputed tick directions (30° increments) ──
 constexpr const float TICK_DIRS[] = {
@@ -63,18 +71,36 @@ constexpr const float TICK_DIRS[] = {
     -1,  0, -0.5f, -0.8660f, -0.8660f, -0.5f
 };
 
+// ─── Colour helpers ───
+static inline uint16_t PalRing(bool amber)        { return amber ? CLR_RING_A        : CLR_RING_G; }
+static inline uint16_t PalRingBright(bool amber)  { return amber ? CLR_RING_BRIGHT_A  : CLR_RING_BRIGHT_G; }
+static inline uint16_t PalScan(bool amber)        { return amber ? CLR_SCAN_A         : CLR_SCAN_G; }
+static inline uint16_t PalGlow(bool amber)        { return amber ? CLR_GLOW_A         : CLR_GLOW_G; }
+static inline uint16_t PalCrosshair(bool amber)   { return amber ? CLR_CROSSHAIR_A    : CLR_CROSSHAIR_G; }
+static inline uint16_t PalCommercial(bool amber)  { return amber ? CLR_COMMERIAL_A    : CLR_COMMERIAL_G; }
+static inline uint16_t PalGlowComm(bool amber)    { return amber ? CLR_GLOW_COMM_A    : CLR_GLOW_COMM_G; }
+static inline const uint16_t* PalTrailGradient(bool amber) { return amber ? TRAIL_GRADIENT_A : TRAIL_GRADIENT_G; }
+
 // ─── Incremental scan state ───
 struct ScanState {
-    float angle = 0.0f;     // Current sweep angle (radians, clockwise from North)
-    float c = 1.0f;         // cos(angle) — maintained incrementally
-    float s = 0.0f;         // sin(angle) — maintained incrementally
+    float angle = 0.0f;
+    float c = 1.0f;
+    float s = 0.0f;
 };
 
 static ScanState scanState;
+static bool useAmber = false;  // Phosphor colour palette
+static ScanMode currentMode = ScanMode::ANGULAR;
 
-// ─── Incremental trig: rotate (c,s) to increase angle by delta radians ──
-// Increasing angle = clockwise on screen (N→E→S→W)
-// cos(θ+δ) = c - s·δ,  sin(θ+δ) = s + c·δ
+// ─── Radial ping state ───
+static uint8_t pingRadius = 0;
+static uint8_t pingPhase = 0;  // 0=expand, 1=pause
+static uint32_t pingLastTime = 0;
+constexpr uint32_t PING_EXPAND_MS = 2500;  // ~2.5s expand
+constexpr uint32_t PING_PAUSE_MS = 3000;   // ~3s pause
+constexpr uint8_t PING_MAX_RADIUS = 160;   // Off-screen (240x240 display)
+
+// ─── Incremental trig ───
 static inline void RotateAngle(float &c, float &s, float delta)
 {
     float nc = c - s * delta;
@@ -83,10 +109,10 @@ static inline void RotateAngle(float &c, float &s, float delta)
     s = ns;
 }
 
-// ─── Renormalise to prevent incremental drift ───
 static inline void Renormalise(float &c, float &s)
 {
     float mag = sqrt(c * c + s * s);
+    if (mag < 1e-6f) { c = 1.0f; s = 0.0f; return; }
     c /= mag;
     s /= mag;
 }
@@ -102,18 +128,6 @@ static String FormatRangeNm(float nm)
     return String((int)(nm + 0.5f)) + "nm";
 }
 
-// ─── Store current positions for interpolation before new fetch ──
-static void StorePrev(const std::map<String, SimpleAircraft>& tracked,
-                      std::map<String, InterpPosition>& prev)
-{
-    for (auto& [icao, ac] : tracked) {
-        auto& p = prev[icao];
-        p.prevLat = ac.lat;
-        p.prevLon = ac.lon;
-        p.hasPrev = true;
-    }
-}
-
 // ════════════════════════════════════════════════════════════
 
 enum class TargetGlyph {
@@ -124,18 +138,25 @@ enum class TargetGlyph {
 };
 
 // ─── Aircraft type detection ───
-// Military squawks: 4000–4999, 7000+, emergencies
 static AircraftType GetAircraftType(const SimpleAircraft& ac)
 {
     if (ac.squawk.isEmpty()) {
         return AircraftType::COMMERCIAL;
     }
     int sq = ac.squawk.toInt();
-    if ((sq >= 4000 && sq <= 4999) ||  // Military (Europe)
-        sq >= 7000) {                   // Emergency / military
+    if ((sq >= 4000 && sq <= 4999) ||
+        sq >= 7000) {
         return AircraftType::MILITARY;
     }
     return AircraftType::COMMERCIAL;
+}
+
+// ─── Squawk alert detection ───
+static bool IsAlertSquawk(const SimpleAircraft& ac)
+{
+    if (ac.squawk.isEmpty()) return false;
+    int sq = ac.squawk.toInt();
+    return (sq == 7500 || sq == 7600 || sq == 7700 || sq == 1200);
 }
 
 static TargetGlyph GetTargetGlyph(const SimpleAircraft& ac)
@@ -144,50 +165,6 @@ static TargetGlyph GetTargetGlyph(const SimpleAircraft& ac)
     if (ac.category == "A5" || ac.category == "A6") return TargetGlyph::HEAVY;
     if (ac.groundspeed > 1.0f) return TargetGlyph::FIXED_WING;
     return TargetGlyph::UNKNOWN;
-}
-
-static float ComputeDataAgeSec(const SimpleAircraft& ac, uint32_t msSinceFetch)
-{
-    float ageAtFetch = ac.seen;
-    if (ac.seenPos > ageAtFetch) ageAtFetch = ac.seenPos;
-    return ageAtFetch + ((float)msSinceFetch / 1000.0f);
-}
-
-static float ComputeQuality01(float ageSec)
-{
-    // Fresh <=2s. Fade confidence toward zero by ~28s.
-    if (ageSec <= 2.0f) return 1.0f;
-    if (ageSec >= 28.0f) return 0.0f;
-    float q = 1.0f - ((ageSec - 2.0f) / 26.0f);
-    if (q < 0.0f) q = 0.0f;
-    if (q > 1.0f) q = 1.0f;
-    return q;
-}
-
-static void DeadReckonPosition(const SimpleAircraft& ac, uint32_t msSinceFetch, float& outLat, float& outLon)
-{
-    outLat = ac.lat;
-    outLon = ac.lon;
-    if (ac.groundspeed < 2.0f) return;
-
-    // Use position age + local elapsed time so the plot reflects actual stale offset.
-    float dt = ((float)msSinceFetch / 1000.0f) + ac.seenPos;
-    if (dt <= 0.05f || dt > 35.0f) return;
-
-    float trk = ac.heading * 0.0174533f;
-    float speedNmPerSec = ac.groundspeed / 3600.0f;
-    float distNm = speedNmPerSec * dt;
-
-    // Local tangent projection (fast, stable for short dt)
-    float dNorthNm = cosf(trk) * distNm;
-    float dEastNm = sinf(trk) * distNm;
-    float dLatDeg = dNorthNm / 60.0f;
-    float cosLat = cosf(ac.lat * 0.0174533f);
-    if (cosLat < 0.01f) cosLat = 0.01f;
-    float dLonDeg = dEastNm / (60.0f * cosLat);
-
-    outLat = ac.lat + dLatDeg;
-    outLon = ac.lon + dLonDeg;
 }
 
 // ════════════════════════════════════════════════════════════
@@ -201,124 +178,347 @@ void AircraftManager::Initialise()
     if (!maxRangeNmStr.isEmpty()) {
         rad = maxRangeNmStr.toFloat() / 60.0f;
     } else {
-        // Backward compatibility with old config key (degrees).
         rad = configServer.GetStoredString("radius").toFloat();
     }
     displayInfoText = configServer.GetStoredString("infotext") == "true";
     displayTriangles = configServer.GetStoredString("triangle") == "true";
     displayScanLine = configServer.GetStoredString("scanline") != "false";
+    displayTrailDots = configServer.GetStoredString("trails") == "true";
+    alertSquawk = configServer.GetStoredString("squawkalert") == "true";
+    useAmber = configServer.GetStoredString("phosphor") == "amber";
 
-    // Force ADS-B fetch cadence to one update per full revolution.
     fetchInterval = FETCH_DEFAULT;
 
-    // Range ring labels in NM (outer=max range, mid≈66%, inner≈33%).
     const float outerNm = rad * 60.0f;
     ringLabelInner = FormatRangeNm(outerNm * ((float)RING_INNER_PX / (float)RING_OUTER_PX));
     ringLabelMid   = FormatRangeNm(outerNm * ((float)RING_MID_PX   / (float)RING_OUTER_PX));
     ringLabelOuter = FormatRangeNm(outerNm);
 
-    Serial.printf("[RADAR] lat=%.6f lon=%.6f rad=%.2f deg (%.1f NM outer)\n", lat, lon, rad, outerNm);
+    GridLog(String("[RADAR] lat=").c_str());
     if (rad <= 0.001f) {
-        Serial.println("[RADAR] WARNING: radius not set — no aircraft will appear");
+        GridLog("[RADAR] WARNING: radius not set — no aircraft will appear");
     }
 
-    // ── Reset scan/startup state ──
     scanState = {0.0f, 1.0f, 0.0f};
     initialSyncComplete = false;
     initialSyncLastAttempt = 0;
     warmupStartMs = millis();
     warmupComplete = false;
+    airportsFetched = false;
+    airportsFetchRetry = 0;
+    fadeInComplete = false;
+    fadeInRow = 0;
+    lastFadeIn = 0;
 
-    // ── Clear screen + draw grid + startup status ──
+    tft.fillScreen(CLR_BG);
+    tft.setTextColor(PalRingBright(useAmber), CLR_BG);
+    tft.setTextSize(2);
+    tft.drawCentreString("RADAR WARMUP", 120, 112, 1);
+}
+
+// ── Live config reload (no restart) ──
+void AircraftManager::ReloadDisplayConfig()
+{
+    // ── Reload range (affects ring labels + aircraft filtering) ──
+    String newMaxRangeNmStr = configServer.GetStoredString("maxrange");
+    if (!newMaxRangeNmStr.isEmpty()) {
+        rad = newMaxRangeNmStr.toFloat() / 60.0f;
+    } else {
+        rad = configServer.GetStoredString("radius").toFloat();
+    }
+    const float outerNm = rad * 60.0f;
+    ringLabelInner = FormatRangeNm(outerNm * ((float)RING_INNER_PX / (float)RING_OUTER_PX));
+    ringLabelMid   = FormatRangeNm(outerNm * ((float)RING_MID_PX   / (float)RING_OUTER_PX));
+    ringLabelOuter = FormatRangeNm(outerNm);
+    Serial.printf("[RADAR] Range updated: %.1f NM outer\n", outerNm);
+
+    // ── Reload theme ──
+    bool newAmber = configServer.GetStoredString("phosphor") == "amber";
+    if (newAmber != useAmber) {
+        useAmber = newAmber;
+        Serial.printf("[RADAR] Theme changed to %s\n", useAmber ? "amber" : "green");
+    }
+
+    // ── Reload scan mode ──
+    String newMode = configServer.GetStoredString("scanmode");
+    if (newMode.isEmpty()) newMode = "angular";
+    bool newRadial = newMode == "radial";
+    if (newRadial && currentMode != ScanMode::RADIAL) {
+        currentMode = ScanMode::RADIAL;
+        pingRadius = 0;
+        pingPhase = 0;
+        pingLastTime = millis();
+        Serial.println("[RADAR] Scan mode: radial ping");
+    } else if (!newRadial && currentMode != ScanMode::ANGULAR) {
+        currentMode = ScanMode::ANGULAR;
+        scanState = {0.0f, 1.0f, 0.0f};
+        Serial.println("[RADAR] Scan mode: angular sweep");
+    }
+
+    // ── Reload display toggles ──
+    displayInfoText = configServer.GetStoredString("infotext") == "true";
+    displayTriangles = configServer.GetStoredString("triangle") == "true";
+    displayScanLine = configServer.GetStoredString("scanline") != "false";
+    displayTrailDots = configServer.GetStoredString("trails") == "true";
+    alertSquawk = configServer.GetStoredString("squawkalert") == "true";
+
+    // ── Redraw everything with new config ──
     tft.fillScreen(CLR_BG);
     DrawRadarGrid();
-    tft.setTextColor(CLR_RING_BRIGHT);
+    DrawRadarLabels();
+}
+
+// ── Apply single setting change (avoids EEPROM re-read race) ──
+void AircraftManager::ApplyThemeChange(bool amber)
+{
+    if (amber != useAmber) {
+        useAmber = amber;
+        Serial.printf("[RADAR] Theme: %s\n", useAmber ? "amber" : "green");
+    }
+    tft.fillScreen(CLR_BG);
+    DrawRadarGrid();
+    DrawRadarLabels();
+}
+
+void AircraftManager::ApplyModeChange(bool radial)
+{
+    if (radial && currentMode != ScanMode::RADIAL) {
+        currentMode = ScanMode::RADIAL;
+        pingRadius = 0;
+        pingPhase = 0;
+        pingLastTime = millis();
+        Serial.println("[RADAR] Scan mode: radial ping");
+    } else if (!radial && currentMode != ScanMode::ANGULAR) {
+        currentMode = ScanMode::ANGULAR;
+        scanState = {0.0f, 1.0f, 0.0f};
+        Serial.println("[RADAR] Scan mode: angular sweep");
+    }
+    tft.fillScreen(CLR_BG);
+    DrawRadarGrid();
+    DrawRadarLabels();
+}
+
+// ── Common label drawing ──
+void AircraftManager::DrawRadarLabels() const
+{
+    const int cx = 120, cy = 120;
+    tft.setTextColor(PalRingBright(useAmber));
     tft.setTextSize(1);
-    tft.drawCentreString("SYNC READSB...", 120, 112, 1);
+    tft.drawCentreString("N", cx, 2, 1);
+    tft.drawCentreString("N", cx + 1, 2, 1);
+    tft.drawCentreString("S", cx, 228, 1);
+    tft.drawCentreString("S", cx + 1, 228, 1);
+    tft.drawCentreString("E", 236, cy - 3, 1);
+    tft.drawCentreString("E", 237, cy - 3, 1);
+    tft.drawCentreString("W", 4, cy - 3, 1);
+    tft.drawCentreString("W", 5, cy - 3, 1);
+    tft.drawString(ringLabelOuter, cx + 6, cy - RING_OUTER_PX + 4, 1);
+    tft.drawString(ringLabelMid,   cx + 6, cy - RING_MID_PX   + 4, 1);
+    tft.drawString(ringLabelInner, cx + 6, cy - RING_INNER_PX + 4, 1);
+}
+
+bool AircraftManager::IsAmber() const { return useAmber; }
+bool AircraftManager::IsRadial() const { return currentMode == ScanMode::RADIAL; }
+
+// ── Force sync (static, called from web UI) ──
+bool AircraftManager::forceSyncRequested = false;
+
+void AircraftManager::RequestForceSync()
+{
+    forceSyncRequested = true;
+    GridLog("[RADAR] Force sync requested");
+}
+
+bool AircraftManager::HasForceSyncRequested()
+{
+    return forceSyncRequested;
 }
 
 void AircraftManager::Update()
 {
     static uint32_t lastRotation = 0;
 
-    // ── Startup sequence: warm-up display, then gate on first valid readsb sync ──
+    // ── Startup sequence ──
     if (!initialSyncComplete) {
         uint32_t now = millis();
 
-        // Flashing warmup indicator - no countdown since sync time is unknown
+        // Static warmup text
         static uint32_t lastBlink = 0;
-        static bool blinkState = false;
-        
-        if ((now - lastBlink) >= 500) {  // Toggle every 500ms
-            blinkState = !blinkState;
+        if (now - lastBlink >= 1000) {
             lastBlink = now;
-            
-            // Draw or erase text without affecting grid
-            if (blinkState) {
-                tft.setTextColor(CLR_RING_BRIGHT, CLR_BG);
-                tft.setTextSize(2);  // Larger text
-                tft.drawCentreString("RADAR WARMUP", 120, 108, 1);
-            } else {
-                // Redraw entire grid to erase text and restore all elements
-                tft.fillScreen(CLR_BG);
-                DrawRadarGrid();
-                // Redraw bearing labels with slightly larger text
-                tft.setTextColor(CLR_RING_BRIGHT);
-                tft.setTextSize(1);  // Base size
-                // Draw bold by drawing twice with offset
-                tft.drawCentreString("N", 120, 4, 1);
-                tft.drawCentreString("N", 121, 4, 1);
-                tft.drawCentreString("S", 120, 230, 1);
-                tft.drawCentreString("S", 121, 230, 1);
-                tft.drawCentreString("E", 230, 116, 1);
-                tft.drawCentreString("E", 231, 116, 1);
-                tft.drawCentreString("W", 10, 116, 1);
-                tft.drawCentreString("W", 11, 116, 1);
-            }
+            tft.fillRect(50, 100, 140, 24, CLR_BG);
+            tft.setTextColor(PalRingBright(useAmber), CLR_BG);
+            tft.setTextSize(2);
+            tft.drawCentreString("RADAR WARMUP", 120, 112, 1);
         }
 
-        // Attempt silent sync in background (no visual feedback)
-        // Also allow timeout after 10 seconds to prevent getting stuck
+        // Try aircraft sync every 1.5s
         if ((now - initialSyncLastAttempt) >= 1500 || (now - warmupStartMs) >= 10000) {
             initialSyncLastAttempt = now;
             if (RefreshAircraft() || (now - warmupStartMs) >= 10000) {
                 initialSyncComplete = true;
                 lastRotation = now;
-                // Final grid redraw when starting sweep
-                tft.fillScreen(CLR_BG);
-                DrawRadarGrid();
+
                 if ((now - warmupStartMs) >= 10000) {
-                    Serial.println("[RADAR] Warmup timeout, starting sweep without sync");
+                    GridLog("[RADAR] Warmup timeout, starting sweep without sync");
                 } else {
-                    Serial.println("[RADAR] Initial sync complete, starting sweep");
+                    GridLog("[RADAR] Initial sync complete, starting sweep");
                 }
+
+                // Beam reveal: screen is already black. Sweep a thin bright beam down,
+                // drawing radar rows as we go.
+                fadeInComplete = false;
+                fadeInRow = 0;
+                lastFadeIn = now;
+
+                return;  // Let Update() handle reveal next calls
             }
         }
         return;
     }
 
-    // ── Called once per rotation: fetch one ADS-B frame ──
-    if (lastRotation == 0 || (millis() - lastRotation) >= fetchInterval) {
-        lastRotation = millis();
-        RefreshAircraft();
+    // ── Beam reveal ──
+    if (!fadeInComplete) {
+        uint32_t now = millis();
+        if (now - lastFadeIn >= 12) {
+            lastFadeIn = now;
+            if (fadeInRow < 240) {
+                int y = fadeInRow;
+                int cx = 120, cy = 120;
+                uint16_t ringClr = PalRing(useAmber);
+                uint16_t ringBrightClr = PalRingBright(useAmber);
+                uint16_t crossClr = PalCrosshair(useAmber);
+                uint16_t scanClr = PalScan(useAmber);
+
+                tft.startWrite();
+
+                // ── Helper: draw radar content for one row ──
+                auto drawRow = [&](int row) {
+                    // Circles
+                    for (int r : {RING_OUTER_PX, RING_MID_PX, RING_INNER_PX}) {
+                        int dy = row - cy;
+                        if (abs(dy) <= r) {
+                            int dx = (int)round(sqrtf((float)(r * r - dy * dy)));
+                            int x1 = cx - dx, x2 = cx + dx;
+                            if (x1 < 0) x1 = 0;
+                            if (x2 > 239) x2 = 239;
+                            if (x1 <= x2) {
+                                tft.drawPixel(x1, row, ringClr);
+                                tft.drawPixel(x2, row, ringClr);
+                            }
+                        }
+                    }
+                    // Crosshairs
+                    if (crossClr != CLR_BG) {
+                        tft.drawPixel(cx, row, crossClr);
+                        tft.drawPixel(cx + 1, row, crossClr);
+                        if (row == cy) tft.drawFastHLine(0, row, 240, crossClr);
+                    }
+                    // Tick marks (30° intervals, skip cardinal)
+                    for (int i = 0; i < 12; i++) {
+                        if (i == 0 || i == 3 || i == 6 || i == 9) continue;
+                        float tdx = TICK_DIRS[i * 2], tdy = TICK_DIRS[i * 2 + 1];
+                        int tx1 = cx + (int)(tdx * 106), ty1 = cy + (int)(tdy * 106);
+                        int tx2 = cx + (int)(tdx * 114), ty2 = cy + (int)(tdy * 114);
+                        int tMinY = min(ty1, ty2), tMaxY = max(ty1, ty2);
+                        if (row >= tMinY && row <= tMaxY) {
+                            int tx = (ty2 == ty1) ? tx1 : tx1 + (int)((float)(tx2 - tx1) * (row - ty1) / (ty2 - ty1));
+                            tft.drawPixel(tx, row, ringClr);
+                        }
+                    }
+                    // North bright tick (y=4..14)
+                    if (row >= 4 && row <= 14) tft.drawPixel(cx, row, ringBrightClr);
+                    // Labels
+                    tft.setTextColor(ringBrightClr);
+                    tft.setTextSize(1);
+                    if (row >= 0 && row <= 7) { tft.drawCentreString("N", cx, 2, 1); tft.drawCentreString("N", cx + 1, 2, 1); }
+                    if (row >= 226 && row <= 235) { tft.drawCentreString("S", cx, 228, 1); tft.drawCentreString("S", cx + 1, 228, 1); }
+                    if (row >= 115 && row <= 124) { tft.drawCentreString("E", 236, 117, 1); tft.drawCentreString("E", 237, 117, 1); tft.drawCentreString("W", 4, 117, 1); tft.drawCentreString("W", 5, 117, 1); }
+                    if (row >= 12 && row <= 19) tft.drawString(ringLabelOuter, cx + 6, 14, 1);
+                    if (row >= 49 && row <= 56) tft.drawString(ringLabelMid, cx + 6, 51, 1);
+                    if (row >= 86 && row <= 93) tft.drawString(ringLabelInner, cx + 6, 88, 1);
+                    // Airport markers
+                    for (const auto& ap : airports) {
+                        if (ap.onScreen && ap.sy >= row - 3 && ap.sy <= row + 2) {
+                            tft.drawPixel(ap.sx, ap.sy, 0xFFFF);
+                            tft.drawPixel(ap.sx - 1, ap.sy - 1, 0xFFFF);
+                            tft.drawPixel(ap.sx + 1, ap.sy - 1, 0xFFFF);
+                            tft.drawPixel(ap.sx - 2, ap.sy - 2, 0xFFFF);
+                            tft.drawPixel(ap.sx + 2, ap.sy - 2, 0xFFFF);
+                            tft.drawPixel(ap.sx, ap.sy - 3, 0xFFFF);
+                            tft.drawPixel(ap.sx - 1, ap.sy + 1, 0xFFFF);
+                            tft.drawPixel(ap.sx + 1, ap.sy + 1, 0xFFFF);
+                            tft.drawPixel(ap.sx, ap.sy + 2, 0xFFFF);
+                        }
+                    }
+                };
+
+                // ── Erase beam from previous row, redraw content ──
+                if (y > 0) {
+                    int py = y - 1;
+                    tft.drawFastHLine(0, py, 240, CLR_BG);
+                    drawRow(py);
+                }
+
+                // ── Draw content for current row ──
+                drawRow(y);
+
+                // ── Beam line on top ──
+                tft.drawFastHLine(0, y, 240, scanClr);
+
+                tft.endWrite();
+
+                fadeInRow++;
+            } else {
+                // Reveal complete — redraw clean
+                fadeInComplete = true;
+                DrawRadarGrid();
+                DrawRadarLabels();
+                DrawAirportMarkers();
+            }
+        }
+        return;
     }
 
-    // ── Scan animation (cadence-locked, ~25fps target) ──
-    // Use scheduled ticks instead of "set last=now" to reduce frame jitter.
+    // ── Fetch airports if not yet done (retry on failure) ──
+    if (!airportsFetched) {
+        uint32_t now = millis();
+        if (airportsFetchRetry == 0 || now >= airportsFetchRetry) {
+            FetchAirports(10000);  // 10s timeout, retry every 60s on failure
+            if (!airportsFetched) {
+                airportsFetchRetry = now + 60000;
+            }
+        }
+    }
+
+    // ── Fetch once per rotation (or more often after failures) ──
+    bool forceSync = AircraftManager::HasForceSyncRequested();
+    if (millis() - lastRotation >= fetchInterval || forceSync) {
+        if (forceSync) {
+            AircraftManager::forceSyncRequested = false;
+            GridLog("[RADAR] Executing force sync");
+        }
+        lastRotation = millis();
+        if (!RefreshAircraft()) {
+            fetchInterval = 5000;  // Fetch every 5s until success
+        } else {
+            fetchInterval = FETCH_DEFAULT;  // Back to normal 10s
+        }
+    }
+
+    // ── Scan animation ──
     static uint32_t nextScan = 0;
     uint32_t now = millis();
     if (nextScan == 0) nextScan = now;
     if ((int32_t)(now - nextScan) >= 0) {
         DrawRadarFrame();
         nextScan += SCAN_INTERVAL;
-        // If we fell far behind (WiFi/fetch stall), resync cleanly.
         if ((uint32_t)(now - nextScan) > (SCAN_INTERVAL * 4)) {
             nextScan = now + SCAN_INTERVAL;
         }
     }
 
-    // ── PPI phosphor decay: dim blips at fixed cadence ──
-    // 24 brightness levels @ 375ms -> ~9 seconds fade out.
+    // ── PPI phosphor decay ──
     static uint32_t lastDecay = 0;
     if (millis() - lastDecay >= DECAY_INTERVAL_MS) {
         DecayAircraft();
@@ -326,109 +526,307 @@ void AircraftManager::Update()
     }
 }
 
-// ── Called once per rotation: fetch data + update projected positions ──
+// ── Called once per rotation ──
 bool AircraftManager::RefreshAircraft()
 {
-    // Fetch fresh data (no visual scrub during warmup)
-    StorePrev(trackedAircraft, prevPositions);
-    bool fetchOk = FetchLocal();
+    String dataSource = configServer.GetStoredString("datasource");
+    if (dataSource.isEmpty()) dataSource = "local";
+
+    bool fetchOk = false;
+    if (dataSource == "local") {
+        fetchOk = FetchLocal();
+    } else if (dataSource == "adsblol") {
+        // ADSB.lol: enforce 60s minimum between fetches (rate limit / memory)
+        // Skip gate on first fetch (lastFetch == 0 means never fetched)
+        constexpr uint32_t ADSBLol_FETCH_MIN = 60000;
+        if (lastFetch > 0 && millis() - lastFetch < ADSBLol_FETCH_MIN) {
+            return true; // skip — too soon
+        }
+        fetchOk = FetchAdsblol();
+    } else {
+        Serial.printf("[FETCH] Unknown datasource: %s\n", dataSource.c_str());
+        return false;
+    }
+
     if (!fetchOk) {
+        GridLog("[FETCH] Network error - keeping existing aircraft");
         return false;
     }
     lastFetch = millis();
 
-    // Erase blips that are no longer tracked
-    std::vector<String> gone;
-    for (auto& [icao, lp] : lastPositions) {
-        if (!trackedAircraft.count(icao)) {
-            if (lp.visible) ErasePosition(lp.x, lp.y, AIRCRAFT_ERASE_RADIUS);
-            gone.push_back(icao);
-        }
-    }
-    for (auto& icao : gone) lastPositions.erase(icao);
+    // Update positions from API data. Only update x/y coordinates — do NOT
+    // touch brightness or visible state. Visibility is controlled solely by beam hits and decay.
+    // Aircraft persist as long as the feeder reports them.
 
-    // Update all tracked aircraft positions.
-    // PPI behavior: brightness is refreshed only when the sweep touches the blip.
     for (auto& [icao, ac] : trackedAircraft) {
         auto proj = ProjectCoordinateToScreen(ac.lat, ac.lon);
         int x = proj.first, y = proj.second;
         bool on = (x > 0 && x < 239 && y > 0 && y < 239);
 
+        // ── Record trail history (waypoint-compressed) ──
+        if (on && displayTrailDots) {
+            auto& hist = trailHistories[icao];
+            // Only store a new waypoint if direction changed significantly
+            bool shouldRecord = false;
+            if (hist.count == 0) {
+                shouldRecord = true;  // First point always recorded
+            } else if (hist.count == 1) {
+                shouldRecord = true;  // Second point needed to establish direction
+            } else {
+                // Check if heading changed enough from the last two waypoints
+                int tail = (hist.head - hist.count + TRAIL_WAYPOINTS_MAX) % TRAIL_WAYPOINTS_MAX;
+                int prev = (hist.head - 1 + TRAIL_WAYPOINTS_MAX) % TRAIL_WAYPOINTS_MAX;
+                const auto& p0 = hist.points[tail];
+                const auto& p1 = hist.points[prev];
+                // Direction from p0→p1
+                int dx1 = p1.x - p0.x;
+                int dy1 = p1.y - p0.y;
+                // Direction from p1→new
+                int dx2 = x - p1.x;
+                int dy2 = y - p1.y;
+                // Cross product magnitude = |v1|×|v2|×sin(θ)
+                // Dot product = |v1|×|v2|×cos(θ)
+                // sin²(15°) ≈ 0.06699 → compare cross² ≥ 0.067 × dot²
+                // Use fixed-point: 67/1000 to avoid float
+                long cross = (long)dx1 * dy2 - (long)dy1 * dx2;
+                long dot = (long)dx1 * dx2 + (long)dy1 * dy2;
+                if (cross < 0) cross = -cross;
+                // |cross| / |dot| ≥ tan(15°) ≈ 0.268 → cross × 1000 ≥ dot × 268
+                if (cross * 1000 >= (long)abs(dot) * 268) {
+                    shouldRecord = true;
+                }
+            }
+            if (shouldRecord) {
+                hist.points[hist.head].x = x;
+                hist.points[hist.head].y = y;
+                hist.points[hist.head].timestamp = millis();
+                hist.head = (hist.head + 1) % TRAIL_WAYPOINTS_MAX;
+                if (hist.count < TRAIL_WAYPOINTS_MAX) hist.count++;
+            }
+        }
+
+        auto lpIt = lastPositions.find(icao);
         if (on) {
-            // Erase old position if it moved and was visible
-            if (lastPositions.count(icao) && lastPositions[icao].visible) {
-                ErasePosition(lastPositions[icao].x, lastPositions[icao].y, AIRCRAFT_ERASE_RADIUS);
+            // New aircraft start at half brightness — beam will set to full on contact
+            // Existing aircraft keep their current brightness and visible state
+            if (lpIt == lastPositions.end()) {
+                lastPositions[icao] = {x, y, true, BRIGHTNESS_MAX / 2, ac.rssi};
+            } else {
+                lpIt->second.x = x;
+                lpIt->second.y = y;
+                lpIt->second.rssi = ac.rssi;
             }
-            uint8_t b = lastPositions.count(icao) ? lastPositions[icao].brightness : (BRIGHTNESS_MAX / 2);
-            lastPositions[icao] = {x, y, true, b};
         } else {
-            if (lastPositions.count(icao) && lastPositions[icao].visible) {
-                ErasePosition(lastPositions[icao].x, lastPositions[icao].y, AIRCRAFT_ERASE_RADIUS);
+            // Off-screen — update position but don't kill visibility
+            // Dead reckoning will handle position between syncs
+            if (lpIt != lastPositions.end()) {
+                lpIt->second.x = x;
+                lpIt->second.y = y;
+                lpIt->second.rssi = ac.rssi;
+            } else {
+                lastPositions[icao] = {x, y, false, 0, ac.rssi};
             }
-            lastPositions[icao] = {x, y, false, 0};
         }
     }
 
     return true;
 }
 
-// ── Called each scan frame: decay blip brightness, erase if faded out ──
+// ── Decay blip brightness (RSSI-based: 4.4s weak → 8.8s strong) ──
+// Tracked aircraft decay at their fixed position. Beam recharges on contact.
+// Ghosts (left the feed) also decay, then are removed when faded.
 void AircraftManager::DecayAircraft()
 {
-    std::vector<String> faded;
     for (auto& [icao, lp] : lastPositions) {
-        if (!lp.visible || lp.brightness == 0) continue;
+        // Skip fully faded ghosts — they'll be cleaned up
+        if (!lp.visible && lp.brightness == 0 && !trackedAircraft.count(icao)) continue;
 
-        lp.brightness--;
+        // Skip invisible aircraft — wait for beam to recharge
+        if (!lp.visible) continue;
+
+        // RSSI-based fade duration
+        float rssi = lp.rssi;
+        float fadeDuration = 6.6f;
+        if (rssi < 0.0f) {
+            float rssiNorm = (rssi + 90.0f) / 60.0f;
+            if (rssiNorm < 0.0f) rssiNorm = 0.0f;
+            if (rssiNorm > 1.0f) rssiNorm = 1.0f;
+            fadeDuration = 4.4f + 4.4f * rssiNorm;
+        }
+
+        float steps = fadeDuration / 0.350f;
+        float stepSize = (float)BRIGHTNESS_MAX / steps;
+
+        float& acc = decayAccumulators[icao];
+        acc += stepSize;
+        while (acc >= 1.0f) {
+            acc -= 1.0f;
+            if (lp.brightness > 0) lp.brightness--;
+        }
 
         if (lp.brightness == 0) {
-            // Fully faded — erase with black
-            ErasePosition(lp.x, lp.y, 10);
-            faded.push_back(icao);
+            ErasePosition(lp.x, lp.y, AIRCRAFT_ERASE_RADIUS);
+            lp.visible = false;
+            decayAccumulators.erase(icao);
         } else {
-            // Redraw at lower brightness without hard background erase.
-            // This prevents visible dark patches/squares around fading targets.
-            if (trackedAircraft.count(icao)) {
-                auto& ac = trackedAircraft.at(icao);
-                DrawAircraftBlip(lp.x, lp.y, ac, lp.brightness);
+            // Draw decaying aircraft — brightness drives the visual fade
+            auto acIt = trackedAircraft.find(icao);
+            if (acIt != trackedAircraft.end()) {
+                DrawAircraftBlip(lp.x, lp.y, acIt->second, lp.brightness);
+            } else {
+                SimpleAircraft ghost;
+                ghost.category = "";
+                ghost.squawk = "";
+                DrawAircraftBlip(lp.x, lp.y, ghost, lp.brightness);
             }
         }
     }
-    for (auto& icao : faded) {
-        auto& lp = lastPositions[icao];
-        lp.brightness = 0;
-        lp.visible = false;
+
+    // Remove ghosts that have fully faded
+    std::vector<String> gone;
+    for (auto& [icao, lp] : lastPositions) {
+        if (!lp.visible && lp.brightness == 0 && !trackedAircraft.count(icao)) {
+            gone.push_back(icao);
+        }
+    }
+    for (auto& icao : gone) {
+        lastPositions.erase(icao);
+        trailHistories.erase(icao);
     }
 }
 
-// ── Incremental scan: thin wedge per frame, smooth phosphor trail ──
-// Clockwise on screen = decreasing angle (Y is inverted)
+// ── Shared alert state accessible from both scan modes ──
+struct AlertGlobals {
+    static bool blinkOn;
+    static char icaoBuf[8];
+    static char textBuf[32];
+    static bool active;
+};
+bool AlertGlobals::blinkOn = true;
+char AlertGlobals::icaoBuf[8] = {0};
+char AlertGlobals::textBuf[32] = {0};
+bool AlertGlobals::active = false;
+
+// ── Update alert state (call once per frame from both scan modes) ──
+void AircraftManager::UpdateAlertState(bool displayAlerts)
+{
+    static uint32_t lastBlink = 0;
+    static uint32_t lastCycle = 0;
+    static int idx = 0;
+    static char pool[16][8];
+    constexpr uint32_t CYCLE_MS = 3000;
+
+    int count = 0;
+    if (displayAlerts) {
+        for (const auto& [k, ac] : trackedAircraft) {
+            if (IsAlertSquawk(ac)) {
+                if (count < 16) {
+                    strncpy(pool[count], k.c_str(), 7);
+                    pool[count][7] = '\0';
+                    count++;
+                }
+            }
+        }
+    }
+
+    if (count > 0) {
+        uint32_t now = millis();
+        char* cur;
+        if (count == 1) {
+            cur = pool[0];
+        } else {
+            if (now - lastCycle >= CYCLE_MS) {
+                idx = (idx + 1) % count;
+                lastCycle = now;
+                AlertGlobals::blinkOn = true;
+                lastBlink = now;
+            }
+            cur = pool[idx];
+        }
+        if (strcmp(AlertGlobals::icaoBuf, cur) != 0) {
+            strncpy(AlertGlobals::icaoBuf, cur, 7);
+            AlertGlobals::icaoBuf[7] = '\0';
+            const char* icaoC = AlertGlobals::icaoBuf;
+            SimpleAircraft* ac = nullptr;
+            for (auto& [k, v] : trackedAircraft) {
+                if (strncmp(k.c_str(), icaoC, 8) == 0) { ac = &v; break; }
+            }
+            if (ac) snprintf(AlertGlobals::textBuf, sizeof(AlertGlobals::textBuf), "SQUAWK %s", ac->squawk.c_str());
+        }
+        AlertGlobals::active = true;
+    } else {
+        if (AlertGlobals::active) {
+            tft.fillRect(80, 214, 80, 12, CLR_BG);
+            AlertGlobals::active = false;
+        }
+        AlertGlobals::textBuf[0] = '\0';
+        AlertGlobals::icaoBuf[0] = '\0';
+        idx = 0;
+    }
+
+    if (AlertGlobals::textBuf[0] != '\0') {
+        uint32_t now = millis();
+        if (now - lastBlink >= 400) {
+            AlertGlobals::blinkOn = !AlertGlobals::blinkOn;
+            lastBlink = now;
+        }
+    }
+}
+
+// ── Draw alert text (call from both scan modes) ──
+void AircraftManager::DrawAlertText(bool displayAlerts)
+{
+    if (displayAlerts && AlertGlobals::textBuf[0] != '\0') {
+        uint16_t col = AlertGlobals::blinkOn ? CLR_ALERT : CLR_RING_BRIGHT_A;
+        tft.setTextColor(col, CLR_BG);
+        tft.setTextSize(1);
+        tft.drawCentreString(AlertGlobals::textBuf, 120, 220, 1);
+    }
+}
+
+// ── Draw all aircraft blips with alert flash support ──
+void AircraftManager::DrawAllAircraft(bool displayAlerts)
+{
+    for (const auto& [icao, lp] : lastPositions) {
+        if (!lp.visible || lp.brightness == 0) continue;
+        auto it = trackedAircraft.find(icao);
+        if (it == trackedAircraft.end()) continue;
+        if (displayAlerts && AlertGlobals::icaoBuf[0] != '\0' && strncmp(icao.c_str(), AlertGlobals::icaoBuf, 8) == 0) {
+            uint16_t flashCol = AlertGlobals::blinkOn ? CLR_ALERT : CLR_RING_BRIGHT_A;
+            DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness, flashCol);
+        } else {
+            DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness);
+        }
+    }
+}
+
+// ── Incremental scan frame ──
 void AircraftManager::DrawRadarFrame()
 {
     if (!displayScanLine) return;
 
     const int cx = 120, cy = 120;
-    const int r = 119;             // Scan/trail to near panel edge
-    const int erase_r = 121;       // slight overdraw to kill edge residue
+    const int r = 119;
 
-    // ── Advance scan angle by elapsed time (exact 360° per ROTATION_MS) ──
-    constexpr float DEG1 = 0.0174533f; // visual beam width
+    // ── Mode switch: angular sweep vs radial ping ──
+    if (currentMode == ScanMode::RADIAL) {
+        DrawRadarPing(cx, cy, r);
+        return;
+    }
+
+    // ── Advance scan angle ──
+    constexpr float DEG1 = 0.0174533f;
     static uint32_t lastStepMs = 0;
     uint32_t nowMs = millis();
     uint32_t dtMs = (lastStepMs == 0) ? SCAN_INTERVAL : (nowMs - lastStepMs);
     lastStepMs = nowMs;
-    bool stalled = false;
-    if (dtMs > 250) {
-        dtMs = SCAN_INTERVAL; // keep rotation stable after network stalls
-        stalled = true;
-    }
+    if (dtMs > 250) dtMs = SCAN_INTERVAL;
 
     float delta = SCAN_SPEED * (float)dtMs;
     float prevHeadC = scanState.c;
     float prevHeadS = scanState.s;
     RotateAngle(scanState.c, scanState.s, -delta);
 
-    // Renormalise every ~180 frames to prevent incremental drift
     static int normCount = 0;
     if (++normCount >= 180) {
         Renormalise(scanState.c, scanState.s);
@@ -438,304 +836,235 @@ void AircraftManager::DrawRadarFrame()
     float headC = scanState.c;
     float headS = scanState.s;
 
-    // ── Beam geometry: hard-black erase behind head, then bright head only ──
-    // Erase tracks measured delta so no green residue survives frame jitter.
-
-    // Dynamic tail erase: lag and width scale with current frame step.
-    float eraseLag = delta + (DEG1 * 1.5f);
-    float eraseWidth = delta + (DEG1 * 2.0f);
-    if (eraseLag < (DEG1 * 2.0f)) eraseLag = DEG1 * 2.0f;
-    if (eraseWidth < (DEG1 * 2.0f)) eraseWidth = DEG1 * 2.0f;
-    if (eraseLag > (DEG1 * 8.0f)) eraseLag = DEG1 * 8.0f;
-    if (eraseWidth > (DEG1 * 8.0f)) eraseWidth = DEG1 * 8.0f;
-    if (stalled) {
-        // Aggressive cleanup when a fetch stall occurred.
-        eraseLag = DEG1 * 4.0f;
-        eraseWidth = DEG1 * 6.0f;
-    }
-
-    float eraseC = headC, eraseS = headS;
-    RotateAngle(eraseC, eraseS, eraseLag);
-    float eraseNextC = eraseC, eraseNextS = eraseS;
-    RotateAngle(eraseNextC, eraseNextS, eraseWidth);
-
-    tft.fillTriangle(cx, cy,
-        cx + (int)(eraseC * erase_r), cy - (int)(eraseS * erase_r),
-        cx + (int)(eraseNextC * erase_r), cy - (int)(eraseNextS * erase_r),
-        CLR_BG);
-
-    // Visible phosphor trail behind beam head.
+    // ── Phosphor trail (clears + fades behind beam) ──
     DrawTrail(cx, cy, r, headC, headS);
 
-    if (stalled) {
-        // One extra scrub wedge to clear any sync-boundary residue.
-        float scrubC = headC, scrubS = headS;
-        RotateAngle(scrubC, scrubS, DEG1 * 4.0f);
-        tft.fillTriangle(cx, cy,
-            cx + (int)(headC * erase_r),  cy - (int)(headS * erase_r),
-            cx + (int)(scrubC * erase_r), cy - (int)(scrubS * erase_r),
-            CLR_BG);
-    }
-
-    // Bright scan line (1° wedge at leading edge)
+    // ── Bright scan line ──
+    const int beamR = RING_OUTER_PX;
     float headNextC = headC + headS * DEG1;
     float headNextS = headS - headC * DEG1;
     tft.fillTriangle(cx, cy,
-        cx + (int)(headC * r), cy - (int)(headS * r),
-        cx + (int)(headNextC * r), cy - (int)(headNextS * r),
-        CLR_SCAN);
+        cx + (int)(headC * beamR), cy - (int)(headS * beamR),
+        cx + (int)(headNextC * beamR), cy - (int)(headNextS * beamR),
+        PalScan(useAmber));
 
-    // Bridge large frame steps near edge to remove outer-ring skipping.
-    // Draw only in outer third (66%-100%) to keep center beam narrow.
-    int bridgeSteps = (int)((delta / DEG1) * 1.5f); // Increase bridge steps for smoother outer ring
-    if (bridgeSteps > 1) {
-        if (bridgeSteps > 6) bridgeSteps = 6; // Increase max bridge steps
-        const int bridgeInnerR = (r * 60) / 100; // Start bridge earlier (60% instead of 70%)
-        float bridgeC = headC;
-        float bridgeS = headS;
-        for (int i = 1; i < bridgeSteps; i++) {
-            RotateAngle(bridgeC, bridgeS, DEG1);
-            tft.drawLine(
-                cx + (int)(bridgeC * bridgeInnerR), cy - (int)(bridgeS * bridgeInnerR),
-                cx + (int)(bridgeC * r),            cy - (int)(bridgeS * r),
-                CLR_SCAN);
-            // Pin the beam tip at outer edge so endpoint does not strobe/skip.
-            tft.fillCircle(
-                cx + (int)(bridgeC * r), cy - (int)(bridgeS * r),
-                1, CLR_SCAN);
-        }
-
-        // Clear trailing bridge remnants in the erase sector to prevent green leftovers.
-        float clearC = headC;
-        float clearS = headS;
-        RotateAngle(clearC, clearS, eraseLag);
-        for (int i = 1; i < bridgeSteps; i++) {
-            RotateAngle(clearC, clearS, DEG1);
-            tft.drawLine(
-                cx + (int)(clearC * bridgeInnerR), cy - (int)(clearS * bridgeInnerR),
-                cx + (int)(clearC * erase_r),      cy - (int)(clearS * erase_r),
-                CLR_BG);
-            tft.fillCircle(
-                cx + (int)(clearC * erase_r), cy - (int)(clearS * erase_r),
-                1, CLR_BG);
-        }
-    }
-    // Redrawing every frame can starve ESP8266; ~8Hz is sufficient.
-    static uint8_t gridDiv = 0;
-    if ((++gridDiv % 3) == 0) {
-        DrawRadarGrid();
+    // ── Clean beam edge ──
+    for (int e = beamR + 1; e <= beamR + 2; e++) {
+        int x1 = cx + (int)(headC * e);
+        int y1 = cy - (int)(headS * e);
+        int x2 = cx + (int)(headNextC * e);
+        int y2 = cy - (int)(headNextS * e);
+        if ((x1 < 0 || x1 >= 240 || y1 < 0 || y1 >= 240) &&
+            (x2 < 0 || x2 >= 240 || y2 < 0 || y2 >= 240)) continue;
+        x1 = max(0, min(239, x1)); y1 = max(0, min(239, y1));
+        x2 = max(0, min(239, x2)); y2 = max(0, min(239, y2));
+        tft.drawLine(x1, y1, x2, y2, CLR_BG);
     }
 
-    // ── Bearing labels: redraw every frame so trail never erases them ──
-    tft.setTextColor(CLR_RING_BRIGHT);
-    tft.setTextSize(1);
-    tft.drawCentreString("N", cx, 2, 1);
-    tft.drawCentreString("S", cx, 228, 1);
-    tft.drawCentreString("E", 236, cy - 3, 1);
-    tft.drawCentreString("W", 4, cy - 3, 1);
+    // ── Grid + labels + airports ──
+    DrawRadarGrid();
+    DrawRadarLabels();
+    DrawAirportMarkers();
 
-    // Range labels on each ring (north axis)
-    tft.setTextColor(CLR_RING);
-    tft.drawString(ringLabelOuter, cx + 6, cy - RING_OUTER_PX + 4, 1);
-    tft.drawString(ringLabelMid,   cx + 6, cy - RING_MID_PX   + 4, 1);
-    tft.drawString(ringLabelInner, cx + 6, cy - RING_INNER_PX + 4, 1);
-
-    // Subtle clutter/noise floor (feature #7)
-    static uint32_t clutterSeed = 0xA53C9E21u;
-    clutterSeed = (clutterSeed * 1664525u) + 1013904223u;
-    for (int i = 0; i < 2; i++) {
-        clutterSeed = (clutterSeed * 1664525u) + 1013904223u;
-        int rr = (int)((clutterSeed >> 24) & 0x1F);      // 0..31 px
-        clutterSeed = (clutterSeed * 1664525u) + 1013904223u;
-        float ang = ((float)(clutterSeed & 0x3FF) / 1024.0f) * 6.2831853f;
-        int px = cx + (int)(sinf(ang) * rr);
-        int py = cy - (int)(cosf(ang) * rr);
-        if (px > 1 && px < 238 && py > 1 && py < 238) {
-            uint16_t c = ((clutterSeed & 0x800) ? CLR_CROSSHAIR : CLR_BG);
-            tft.drawPixel(px, py, c);
-        }
-    }
-
-    // ── Update projected positions each frame (dead-reckoning between fetches) ──
-    uint32_t sinceFetchMs = millis() - lastFetch;
-    for (auto& [icao, lp] : lastPositions) {
-        auto it = trackedAircraft.find(icao);
-        if (it == trackedAircraft.end()) continue;
-
-        float predLat = it->second.lat;
-        float predLon = it->second.lon;
-        DeadReckonPosition(it->second, sinceFetchMs, predLat, predLon);
-
-        auto proj = ProjectCoordinateToScreen(predLat, predLon);
-        int nx = proj.first;
-        int ny = proj.second;
-        bool on = (nx > 0 && nx < 239 && ny > 0 && ny < 239);
-
-        if (lp.visible && (!on || abs(nx - lp.x) > 1 || abs(ny - lp.y) > 1)) {
-            ErasePosition(lp.x, lp.y, AIRCRAFT_ERASE_RADIUS);
-        }
-
-        if (on) {
-            lp.x = nx;
-            lp.y = ny;
-            lp.visible = true;
-        } else {
-            lp.visible = false;
-            lp.brightness = 0;
-        }
-    }
-
-    // ── PPI behavior: when beam touches a blip, refresh to full brightness ──
-    // Use dynamic tolerance from actual frame step and test current+previous head.
+    // ── PPI beam-hit refresh ──
     float touchHalfAngle = delta + (DEG1 * 2.0f);
     if (touchHalfAngle < (DEG1 * 4.0f)) touchHalfAngle = DEG1 * 4.0f;
     if (touchHalfAngle > (DEG1 * 12.0f)) touchHalfAngle = DEG1 * 12.0f;
+    // Avoid sqrtf: compare (dot·d)² >= d² × cos² instead of dot >= cos
     float beamTouchCos = cosf(touchHalfAngle);
+    float beamTouchCos2 = beamTouchCos * beamTouchCos;  // cos²(θ)
     for (auto& [icao, lp] : lastPositions) {
-        if (!lp.visible) continue;
-        if (!trackedAircraft.count(icao)) continue;
-
         int vx = lp.x - cx;
-        int vy = cy - lp.y; // screen Y inverted
+        int vy = cy - lp.y;
         float d2 = (float)(vx * vx + vy * vy);
-        if (d2 < 16.0f) continue; // skip near center jitter
+        if (d2 < 16.0f) continue;
 
-        float invD = 1.0f / sqrtf(d2);
-        float ux = vx * invD;
-        float uy = vy * invD;
-        float dotNow  = ux * headC     + uy * headS;
-        float dotPrev = ux * prevHeadC + uy * prevHeadS;
+        // Dot product of (vx,vy) with beam directions
+        float dotNow  = vx * headC     + vy * headS;
+        float dotPrev = vx * prevHeadC + vy * prevHeadS;
+        // Only consider aircraft in front of the beam (positive dot)
         float dot = (dotNow > dotPrev) ? dotNow : dotPrev;
+        if (dot < 0) continue;
+        float dot2 = dot * dot;
 
-        if (dot >= beamTouchCos) {
-            float beamGain = (dot - beamTouchCos) / (1.0f - beamTouchCos);
-            if (beamGain < 0.0f) beamGain = 0.0f;
-            if (beamGain > 1.0f) beamGain = 1.0f;
-
-            float rangeNorm = sqrtf(d2) / (float)r;
-            if (rangeNorm > 1.0f) rangeNorm = 1.0f;
-            float rangeGain = 1.0f - (0.35f * rangeNorm);
-
-            uint32_t sinceFetchMs2 = millis() - lastFetch;
-            float ageSec = ComputeDataAgeSec(trackedAircraft.at(icao), sinceFetchMs2);
-            float quality = ComputeQuality01(ageSec);
-
-            float excite = (float)BRIGHTNESS_MAX * (0.60f + 0.40f * beamGain * rangeGain * (0.50f + 0.50f * quality));
-            if (excite < (float)(BRIGHTNESS_MAX * 0.55f)) excite = (float)(BRIGHTNESS_MAX * 0.55f);
-            if (excite > (float)BRIGHTNESS_MAX) excite = (float)BRIGHTNESS_MAX;
-            lp.brightness = (uint8_t)(excite + 0.5f);
-            DrawAircraftBlip(lp.x, lp.y, trackedAircraft.at(icao), lp.brightness);
-        }
-    }
-
-    // ── Redraw aircraft blips at reduced rate to lower scan jitter ──
-    static uint8_t blipDiv = 0;
-    if ((++blipDiv % 3) == 0) {
-        for (const auto& [icao, lp] : lastPositions) {
-            if (!lp.visible || lp.brightness == 0) continue;
+        if (dot2 >= d2 * beamTouchCos2) {
+            lp.brightness = BRIGHTNESS_MAX;
+            lp.visible = true;
+            decayAccumulators[icao] = 0.0f;
             auto it = trackedAircraft.find(icao);
-            if (it == trackedAircraft.end()) continue;
-            DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness);
+            if (it != trackedAircraft.end()) {
+                DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness);
+            } else {
+                SimpleAircraft ghost;
+                ghost.category = "";
+                ghost.squawk = "";
+                DrawAircraftBlip(lp.x, lp.y, ghost, lp.brightness);
+            }
         }
     }
+
+    // ── Alert update + draw ──
+    UpdateAlertState(alertSquawk);
+    DrawAllAircraft(alertSquawk);
+    DrawAlertText(alertSquawk);
 }
 
-// ── Draw phosphor trail: 32° behind scan line, 10 thin segments ──
+// ── Draw phosphor trail ──
 void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
 {
-    // Trail starts 32° behind head - but we want it in front for correct fade direction
-    // So we calculate the trail position in front of the head
-    float trailC = headC * TRAIL_TAIL_COS - headS * TRAIL_TAIL_SIN;
-    float trailS = headS * TRAIL_TAIL_COS + headC * TRAIL_TAIL_SIN;
-
-    // ── Clear full wedge to black first ──
-    tft.fillTriangle(cx, cy,
-        cx + (int)(headC * r),   cy - (int)(headS * r),
-        cx + (int)(trailC * r),   cy - (int)(trailS * r),
-        CLR_BG);
-
-    // Rotate each segment backward toward tail (opposite direction)
     constexpr float STEP = TRAIL_STEP_DEG * 0.0174533f;
-    float segC = headC;
-    float segS = headS;
-    const float headStartC = headC;
-    const float headStartS = headS;
+    constexpr float STEP_C = 0.9986295f;  // cos(3°) precomputed
+    constexpr float STEP_S = 0.0523360f;  // sin(3°) precomputed
+    (void)STEP;  // kept for reference
+    const uint16_t* gradient = PalTrailGradient(useAmber);
+
+    float prevC = headC;
+    float prevS = headS;
 
     for (int i = 0; i < TRAIL_SEGMENTS; i++) {
-        RotateAngle(segC, segS, -STEP); // Negative step to go backward
-        uint16_t color = TRAIL_GRADIENT[TRAIL_SEGMENTS - 1 - i]; // Reverse gradient order
+        float segC = prevC * STEP_C - prevS * STEP_S;
+        float segS = prevS * STEP_C + prevC * STEP_S;
+        uint16_t color = gradient[i];
         tft.fillTriangle(cx, cy,
-            cx + (int)(segC * r),   cy - (int)(segS * r),
-            cx + (int)(headC * r),  cy - (int)(headS * r),
+            cx + (int)(prevC * r), cy - (int)(prevS * r),
+            cx + (int)(segC * r),  cy - (int)(segS * r),
             color);
-        headC = segC;
-        headS = segS;
+        prevC = segC; prevS = segS;
     }
-
-    // Hard-black guard wedge over oldest trail region (kills tail-end green flash)
-    float guardC = headStartC;
-    float guardS = headStartS;
-    constexpr float TAIL_GUARD_STEP = 0.0174533f * 10.0f; // 10°
-    RotateAngle(guardC, guardS, -TAIL_GUARD_STEP); // Negative step
-    tft.fillTriangle(cx, cy,
-        cx + (int)(headStartC * (r + 2)), cy - (int)(headStartS * (r + 2)),
-        cx + (int)(guardC * (r + 2)),     cy - (int)(guardS * (r + 2)),
-        CLR_BG);
-
-    // Force tail tip to black to prevent edge flash on low-res triangle joins
-    tft.fillCircle(cx + (int)(headStartC * r), cy - (int)(headStartS * r), 5, CLR_BG);
 }
 
-// ── Static grid: rings, ticks, crosshairs ──
-// Drawn ONCE in Initialise() — never redraw during animation
+// ── Radial ping (sonar mode) ──
+void AircraftManager::DrawRadarPing(int cx, int cy, int r)
+{
+    (void)r;
+    uint32_t now = millis();
+    if (pingLastTime == 0) pingLastTime = now;
+
+    uint32_t elapsed = now - pingLastTime;
+
+    // Track previous ring radius to erase it (no full screen clear)
+    static uint8_t prevRadius = 255;
+
+    switch (pingPhase) {
+        case 0: { // EXPAND: ring grows from center off screen
+            float progress = (float)elapsed / (float)PING_EXPAND_MS;
+            if (progress > 1.0f) progress = 1.0f;
+            pingRadius = (uint8_t)(progress * PING_MAX_RADIUS);
+
+            // Hit detection: recharge all aircraft when ring crosses their distance
+            // Avoid sqrtf: compare d² against (r±3)²
+            int rMin = pingRadius - 3;
+            int rMax = pingRadius + 3;
+            if (rMin < 0) rMin = 0;
+            int rMin2 = rMin * rMin;
+            int rMax2 = rMax * rMax;
+            for (auto& [icao, lp] : lastPositions) {
+                int vx = lp.x - cx;
+                int vy = cy - lp.y;
+                int d2 = vx * vx + vy * vy;
+                if (d2 >= rMin2 && d2 <= rMax2) {
+                    lp.brightness = BRIGHTNESS_MAX;
+                    lp.visible = true;  // Re-illuminate faded aircraft
+                    decayAccumulators[icao] = 0.0f;  // Reset decay accumulator
+                }
+            }
+
+            if (elapsed >= PING_EXPAND_MS) {
+                pingPhase = 1;
+                pingLastTime = now;
+            }
+            break;
+        }
+        case 1: { // PAUSE: blank grid, waiting for next ping
+            if (elapsed >= PING_PAUSE_MS) {
+                pingPhase = 0;
+                pingRadius = 0;
+                pingLastTime = now;
+            }
+            break;
+        }
+    }
+
+    // ── Draw: erase previous ring, then draw grid + labels + ring ──
+    if (prevRadius > 0 && prevRadius <= PING_MAX_RADIUS + 2) {
+        tft.drawCircle(cx, cy, prevRadius, CLR_BG);
+        tft.drawCircle(cx, cy, prevRadius + 1, CLR_BG);
+        tft.drawCircle(cx, cy, prevRadius + 2, CLR_BG);
+    }
+
+    // Redraw grid + labels + airports every frame so ring erase doesn't corrupt them
+    DrawRadarGrid();
+    DrawRadarLabels();
+    DrawAirportMarkers();
+
+    // ── Draw single ring at current radius (3px thick, no persistence) ──
+    if (pingPhase == 0 && pingRadius > 0) {
+        uint16_t ringColor = PalScan(useAmber);
+        tft.drawCircle(cx, cy, pingRadius, ringColor);
+        tft.drawCircle(cx, cy, pingRadius + 1, ringColor);
+        tft.drawCircle(cx, cy, pingRadius + 2, ringColor);
+        prevRadius = pingRadius;
+    } else {
+        prevRadius = 255;
+    }
+
+    // ── Alert update + draw ──
+    UpdateAlertState(alertSquawk);
+    DrawAllAircraft(alertSquawk);
+    DrawAlertText(alertSquawk);
+}
+
+// ── Static grid ──
 void AircraftManager::DrawRadarGrid() const
 {
     const int cx = 120, cy = 120;
+    uint16_t ringClr = PalRing(useAmber);
+    uint16_t crosshairClr = PalCrosshair(useAmber);
 
-    // Concentric range rings
-    tft.drawCircle(cx, cy, RING_OUTER_PX, CLR_RING);
-    tft.drawCircle(cx, cy, RING_MID_PX,   CLR_RING);
-    tft.drawCircle(cx, cy, RING_INNER_PX, CLR_RING);
+    tft.drawCircle(cx, cy, RING_OUTER_PX, ringClr);
+    tft.drawCircle(cx, cy, RING_MID_PX,   ringClr);
+    tft.drawCircle(cx, cy, RING_INNER_PX, ringClr);
 
-    // Crosshairs
-    tft.drawFastHLine(1, cy, 238, CLR_CROSSHAIR);
-    tft.drawFastVLine(cx, 1, 238, CLR_CROSSHAIR);
+    tft.drawFastHLine(1, cy, 238, crosshairClr);
+    tft.drawFastVLine(cx, 1, 238, crosshairClr);
 
-    // Tick marks every 30° (12 ticks) EXCEPT at cardinal directions (0°, 90°, 180°, 270°)
-    // Skip indices: 0, 3, 6, 9 (N, E, S, W)
     for (int i = 0; i < 12; i++) {
-        // Skip cardinal directions
         if (i == 0 || i == 3 || i == 6 || i == 9) continue;
-        
         float dx = TICK_DIRS[i * 2], dy = TICK_DIRS[i * 2 + 1];
         tft.drawLine(cx + (int)(dx * 106), cy + (int)(dy * 106),
-                     cx + (int)(dx * 114), cy + (int)(dy * 114), CLR_RING);
+                     cx + (int)(dx * 114), cy + (int)(dy * 114), ringClr);
     }
 
-    // ── North tick: longer mark extending outside ring ──
-    tft.drawLine(cx, cy - 106, cx, cy - 116, CLR_RING_BRIGHT);
+    tft.drawLine(cx, cy - 106, cx, cy - 116, PalRingBright(useAmber));
 }
 
 void AircraftManager::Draw(LGFX& /*buf*/)
 {
-    // No-op — rendering is incremental in RefreshAircraft()
 }
 
-// ── Fade a base color toward black by brightness level (1-BRIGHTNESS_MAX) ──
-uint16_t AircraftManager::FadeColor(uint16_t base, uint8_t level) const
+// ── Fade color toward black ──
+// Precomputed LUT: 25 levels (0..24) × 256 possible base colors = too big
+// Instead: per-component LUT. Each RGB565 component is 0..63.
+// fadeLUT[64][25] maps (component_value, brightness_level) → faded component
+// But that's 64×25 = 1600 entries × 1 byte = 1.6KB in flash — worth it.
+// Simpler: just scale component by level/BRIGHTNESS_MAX using a small multiplier table.
+// fadeScale[level] = (level * 256 + BRIGHTNESS_MAX/2) / BRIGHTNESS_MAX  (fixed-point ×256)
+// result = (component * fadeScale[level]) >> 8  — one multiply, one shift
+static const uint8_t fadeScale[25] = {
+    0, 10, 21, 32, 43, 53, 64, 75, 85, 96, 107, 117, 128, 139, 149, 160, 171, 181, 192, 203, 213, 224, 235, 245, 256
+};
+
+static inline uint16_t FadeColor(uint16_t base, uint8_t level)
 {
     if (level <= 0) return CLR_BG;
     if (level >= BRIGHTNESS_MAX) return base;
-
-    // Extract RGB565 components, scale down by level/BRIGHTNESS_MAX
+    uint8_t s = fadeScale[level];
     uint16_t r5 = (base >> 11) & 0x1F;
     uint16_t g6 = (base >> 5) & 0x3F;
     uint16_t b5 = base & 0x1F;
-
-    uint16_t fr = (r5 * level) / BRIGHTNESS_MAX;
-    uint16_t fg = (g6 * level) / BRIGHTNESS_MAX;
-    uint16_t fb = (b5 * level) / BRIGHTNESS_MAX;
-
+    uint16_t fr = (r5 * s) >> 8;
+    uint16_t fg = (g6 * s) >> 8;
+    uint16_t fb = (b5 * s) >> 8;
     return (fr << 11) | (fg << 5) | fb;
 }
 
@@ -743,119 +1072,131 @@ void AircraftManager::ErasePosition(int x, int y, uint8_t radius) const
 {
     tft.fillCircle(x, y, radius, CLR_BG);
 
-    // Immediately restore static radar primitives under erased area
-    // to avoid visible black patches around aircraft.
     const int cx = 120, cy = 120;
-    tft.drawCircle(cx, cy, RING_OUTER_PX, CLR_RING);
-    tft.drawCircle(cx, cy, RING_MID_PX,   CLR_RING);
-    tft.drawCircle(cx, cy, RING_INNER_PX, CLR_RING);
-    tft.drawFastHLine(1, cy, 238, CLR_CROSSHAIR);
-    tft.drawFastVLine(cx, 1, 238, CLR_CROSSHAIR);
+    uint16_t ringClr = PalRing(useAmber);
+    uint16_t crosshairClr = PalCrosshair(useAmber);
+    tft.drawCircle(cx, cy, RING_OUTER_PX, ringClr);
+    tft.drawCircle(cx, cy, RING_MID_PX,   ringClr);
+    tft.drawCircle(cx, cy, RING_INNER_PX, ringClr);
+    tft.drawFastHLine(1, cy, 238, crosshairClr);
+    tft.drawFastVLine(cx, 1, 238, crosshairClr);
 }
 
-// ── Draw aircraft blip with PPI brightness scaling ──
+// ── Draw aircraft blip ──
 void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, uint8_t brightness) const
+{
+    DrawAircraftBlip(x, y, ac, brightness, 0);
+}
+
+void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, uint8_t brightness, uint16_t overrideColor) const
 {
     AircraftType type = GetAircraftType(ac);
     TargetGlyph glyph = GetTargetGlyph(ac);
+
+    // Brightness maps linearly: BRIGHTNESS_MAX = full bright (scan line level), 0 = black
+    // Decay controls fade — no quality gate on drawing
+    uint8_t effective = brightness;
+    if (effective < 1) effective = 1;
+    if (effective > BRIGHTNESS_MAX) effective = BRIGHTNESS_MAX;
+
+    // Use scan line color as the base (full bright), fade toward aircraft color as it decays
     uint16_t baseColor;
     uint16_t glowColor;
     switch (type) {
-        case AircraftType::MILITARY:  
-            baseColor = CLR_MILITARY;  
+        case AircraftType::MILITARY:
+            baseColor = CLR_MILITARY;
             glowColor = CLR_GLOW_MIL;
             break;
-        case AircraftType::COMMERCIAL: 
-            baseColor = CLR_COMMERIAL; 
-            glowColor = CLR_GLOW_COMM;
+        case AircraftType::COMMERCIAL:
+            baseColor = PalScan(useAmber);  // Full bright = scan line color
+            glowColor = PalGlow(useAmber);
             break;
-        default:                      
-            baseColor = CLR_UNKNOWN;   
+        default:
+            baseColor = CLR_UNKNOWN;
             glowColor = CLR_UNKNOWN;
             break;
     }
 
-    uint32_t sinceFetchMs = millis() - lastFetch;
-    float ageSec = ComputeDataAgeSec(ac, sinceFetchMs);
-    float quality = ComputeQuality01(ageSec);
-    if (quality <= 0.03f) return;
-
-    uint8_t effective = (uint8_t)((float)brightness * (0.25f + 0.75f * quality));
-    if (effective < 1) effective = 1;
-    if (effective > BRIGHTNESS_MAX) effective = BRIGHTNESS_MAX;
-
-    uint16_t color = FadeColor(baseColor, effective);
-    uint16_t glow = FadeColor(glowColor, effective);
+    uint16_t color;
+    if (overrideColor) {
+        color = overrideColor;
+    } else {
+        color = FadeColor(baseColor, effective);
+    }
 
     float hRad = ac.heading * 0.0174533f;
 
-    // Keep geometry stable across fade steps; only color/intensity changes.
-    // This prevents background patching artifacts during refresh/decay.
-    const int headLen = 10;
-    int tx = x + (int)(sin(hRad) * headLen);
-    int ty = y - (int)(cos(hRad) * headLen);
-
-    // Add phosphor glow effect - draw a larger, dimmer circle behind the blip
-    if (effective > BRIGHTNESS_MAX * 0.3f) {
-        uint16_t glowFaded = FadeColor(glowColor, (uint8_t)(effective * 0.4f));
-        tft.fillCircle(x, y, 5, glowFaded);  // Outer glow
+    // ── Trail (dashed line through position history) ──
+    // Draw BEFORE glow and icon so they sit underneath
+    if (displayTrailDots) {
+        auto histIt = trailHistories.find(ac.icao);
+        if (histIt != trailHistories.end()) {
+            const auto& hist = histIt->second;
+            if (hist.count >= 2) {
+                uint32_t now = millis();
+                // Build list of valid trail points (not expired)
+                struct TrailPt { int x, y; uint8_t bright; };
+                TrailPt pts[TRAIL_WAYPOINTS_MAX];
+                int pCount = 0;
+                for (int n = 0; n < hist.count; n++) {
+                    int idx = (hist.head - hist.count + n + TRAIL_WAYPOINTS_MAX) % TRAIL_WAYPOINTS_MAX;
+                    const auto& tp = hist.points[idx];
+                    float ageSec = (float)(now - tp.timestamp) / 1000.0f;
+                    float fade = 1.0f - (ageSec / 600.0f);
+                    if (fade <= 0.0f) continue;
+                    uint8_t trailBright = (uint8_t)(effective * fade * 0.6f);
+                    if (trailBright < 1) continue;
+                    pts[pCount++] = {tp.x, tp.y, trailBright};
+                }
+                // Draw dashed line: draw every other segment
+                for (int i = 0; i < pCount - 1; i += 2) {
+                    uint16_t dc;
+                    if (overrideColor) {
+                        dc = FadeColor(overrideColor, pts[i].bright);
+                    } else {
+                        dc = FadeColor(baseColor, pts[i].bright);
+                    }
+                    tft.drawLine(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, dc);
+                }
+            }
+        }
     }
 
-    // Velocity vector: 15s look-ahead (fixed geometry, color scales with fade)
-    float outerNm = rad * 60.0f;
-    if (outerNm < 0.5f) outerNm = 0.5f;
-    float leadNm = ac.groundspeed * (15.0f / 3600.0f);
-    float leadPx = (leadNm / outerNm) * (float)RING_OUTER_PX;
-    if (leadPx > 14.0f) leadPx = 14.0f;
-    if (leadPx >= 2.0f) {
-        int vx = x + (int)(sin(hRad) * leadPx);
-        int vy = y - (int)(cos(hRad) * leadPx);
-        tft.drawLine(x, y, vx, vy, FadeColor(baseColor, (uint8_t)(effective * 0.6f)));
+    // Phosphor glow (drawn after trail dots, before icon)
+    if (effective > BRIGHTNESS_MAX * 0.2f) {
+        uint16_t glowFaded = FadeColor(glowColor, (uint8_t)(effective * 0.5f));
+        tft.fillCircle(x, y, 3, glowFaded);
     }
 
-    // Class glyphs (feature #5) — constant footprint for clean fading
+    // Class glyphs
     switch (glyph) {
         case TargetGlyph::HELICOPTER: {
-            const int rr = 3;
-            tft.drawLine(x - rr, y, x + rr, y, color);
-            tft.drawLine(x, y - rr, x, y + rr, color);
-            tft.fillCircle(x, y, 1, color);
+            const int rr = 5;
+            tft.drawCircle(x, y, rr, color);
+            tft.drawLine(x - rr + 1, y - rr + 1, x + rr - 1, y + rr - 1, color);
+            tft.drawLine(x - rr + 1, y + rr - 1, x + rr - 1, y - rr + 1, color);
             break;
         }
         case TargetGlyph::HEAVY: {
-            const int rr = 4;
-            tft.fillCircle(x, y, rr, color);
-            tft.drawCircle(x, y, rr + 1, FadeColor(baseColor, (uint8_t)(effective * 0.7f)));
-            // Add glow for heavy aircraft
-            if (effective > BRIGHTNESS_MAX * 0.5f) {
-                uint16_t outerGlow = FadeColor(glowColor, (uint8_t)(effective * 0.3f));
-                tft.drawCircle(x, y, rr + 2, outerGlow);
-            }
+            const int size = 6;
+            tft.fillTriangle(x, y - size, x - size, y + size, x + size, y + size, color);
             break;
         }
         case TargetGlyph::FIXED_WING:
         default: {
-            if (displayTriangles) {
-                tft.fillCircle(x, y, 3, color);
-                tft.drawLine(x, y, tx, ty, color);
-            } else {
-                tft.fillCircle(x, y, 3, color);
-                // Add subtle glow around regular aircraft
-                if (effective > BRIGHTNESS_MAX * 0.4f) {
-                    uint16_t softGlow = FadeColor(glowColor, (uint8_t)(effective * 0.2f));
-                    tft.drawCircle(x, y, 4, softGlow);
-                }
-            }
+            const int size = 5;
+            tft.fillTriangle(x, y - size, x - size, y + size, x + size, y + size, color);
             break;
         }
     }
 
-    // Heading cue for all glyphs except fixed-wing triangle path where it is already drawn.
-    if (!(glyph == TargetGlyph::FIXED_WING && displayTriangles)) {
+    // Heading cue for helicopters only
+    if (glyph == TargetGlyph::HELICOPTER) {
+        int tx = x + (int)(sin(hRad) * 10);
+        int ty = y - (int)(cos(hRad) * 10);
         tft.drawLine(x, y, tx, ty, FadeColor(baseColor, (uint8_t)(effective * 0.85f)));
     }
 }
-
 
 std::pair<int, int> AircraftManager::ProjectCoordinateToScreen(float lat2, float lon2) const
 {
@@ -872,7 +1213,6 @@ std::pair<int, int> AircraftManager::ProjectCoordinateToScreen(float lat2, float
     const double dlat = lat2r - lat1r;
     const double dlon = lon2r - lon1r;
 
-    // Great-circle central angle (radians).
     const double sinHLat = sin(dlat * 0.5);
     const double sinHLon = sin(dlon * 0.5);
     double a = sinHLat * sinHLat + cos(lat1r) * cos(lat2r) * sinHLon * sinHLon;
@@ -884,12 +1224,10 @@ std::pair<int, int> AircraftManager::ProjectCoordinateToScreen(float lat2, float
     const float screenDist = (float)((distDeg / (double)rad) * (double)RING_OUTER_PX);
     if (screenDist <= 1e-6f) return {120, 120};
 
-    // Initial bearing from north, clockwise.
     const double y = sin(dlon) * cos(lat2r);
     const double x = cos(lat1r) * sin(lat2r) - sin(lat1r) * cos(lat2r) * cos(dlon);
     const double brg = atan2(y, x);
 
-    // Screen mapping: +X east (sin), -Y north (cos).
     int sx = 120 + (int)(screenDist * sin(brg));
     int sy = 120 - (int)(screenDist * cos(brg));
     return {sx, sy};
@@ -915,12 +1253,12 @@ bool AircraftManager::FetchLocal()
 
     HttpResult result = http.Get(url);
     if (!result.success) {
-        Serial.printf("[FETCH] FAILED: code=%d err=%s\n", result.statusCode, result.errorMessage.c_str());
+        GridLog("[FETCH] FAILED");
         return false;
     }
     Serial.printf("[FETCH] Got %d bytes\n", result.response.length());
     if (result.response.length() == 0) {
-        Serial.println("[FETCH] Empty response");
+        GridLog("[FETCH] Empty response");
         return false;
     }
     if (result.response.length() > MAX_RESP_BYTES) {
@@ -929,10 +1267,12 @@ bool AircraftManager::FetchLocal()
         return false;
     }
 
-    JsonDocument doc;
+    // Use static document with fixed capacity to avoid heap fragmentation
+    static StaticJsonDocument<8192> doc;
+    doc.clear();
     DeserializationError err = deserializeJson(doc, result.response);
     if (err) {
-        Serial.printf("[FETCH] JSON parse error: %s\n", err.c_str());
+        GridLog("[FETCH] JSON parse error");
         doc.clear();
         return false;
     }
@@ -944,12 +1284,11 @@ bool AircraftManager::FetchLocal()
         return false;
     }
 
-    // Keep nearest in-range aircraft so low-priority targets (e.g. helicopters)
-    // are not dropped just because they appear later in the JSON list.
     std::vector<std::pair<double, SimpleAircraft>> candidates;
     candidates.reserve(arr.size());
 
     int droppedNoPos = 0;
+    int droppedStale = 0;
     for (size_t i = 0; i < arr.size(); i++) {
         auto item = arr[i];
         const char* hexVal = item["hex"];
@@ -964,7 +1303,6 @@ bool AircraftManager::FetchLocal()
             continue;
         }
 
-        // Coarse in-range filter in degree-space.
         double dLat = latVal - (double)lat;
         double dLon = (lonVal - (double)lon) * cos((double)lat * 0.0174533);
         double distDegApprox = sqrt(dLat * dLat + dLon * dLon);
@@ -987,6 +1325,13 @@ bool AircraftManager::FetchLocal()
         ac.category = cat ? cat : "";
         const char* sq = item["squawk"];
         ac.squawk    = sq ? sq : "";
+        ac.rssi      = item["rssi"] | 0.0f;
+
+        // Drop stale aircraft (seen_pos > 30s at source)
+        if (ac.seenPos > 30.0f) {
+            droppedStale++;
+            continue;
+        }
 
         candidates.push_back({distDegApprox, ac});
     }
@@ -1001,11 +1346,212 @@ bool AircraftManager::FetchLocal()
     }
 
     doc.clear();
-    trackedAircraft = next;
-    Serial.printf("[FETCH] In-range=%d tracked=%d (cap=%d) dropped_no_pos=%d\n",
-                  (int)candidates.size(), (int)trackedAircraft.size(), MAX_AIRCRAFT, droppedNoPos);
+
+    // Merge: update existing aircraft with new data, add new ones
+    // Don't remove aircraft not in this fetch — they persist until feeder stops reporting
+    for (auto& [icao, ac] : next) {
+        trackedAircraft[icao] = ac;
+    }
+
+    GridLog("[FETCH] OK");
     return true;
 }
 
-// ── Legacy stub ──
-void AircraftManager::OpenSky() {}
+// ── Fetch from ADSB.lol API (streaming — no buffer cap) ──
+bool AircraftManager::FetchAdsblol()
+{
+#if defined(ARDUINO_ARCH_ESP8266)
+    if (lat == 0.0f || lon == 0.0f) {
+        static int warnCount = 0;
+        if (++warnCount <= 3) Serial.println("[FETCH] ADSB.lol: lat/lon not configured");
+        return false;
+    }
+    if (rad <= 0.001f) {
+        static int warnCount = 0;
+        if (++warnCount <= 3) Serial.println("[FETCH] ADSB.lol: range not configured");
+        return false;
+    }
+
+    int rangeNm = (int)(rad * 60.0f + 0.5f);
+    if (rangeNm < 1) rangeNm = 1;
+    String url = "http://api.adsb.lol/v2/lat/" + String(lat, 6) + "/lon/" + String(lon, 6) + "/dist/" + String(rangeNm);
+    Serial.printf("[FETCH] ADSB.lol GET %s\n", url.c_str());
+
+    HttpStreamResult stream = http.StreamGet(url);
+    if (!stream.success) {
+        Serial.printf("[FETCH] ADSB.lol FAILED: code=%d err=%s\n", stream.statusCode, stream.errorMessage.c_str());
+        return false;
+    }
+
+    // Use static document with fixed capacity to avoid heap fragmentation
+    static StaticJsonDocument<8192> doc;
+    doc.clear();
+    DeserializationError err = deserializeJson(doc, *stream.client);
+    stream.client->stop();
+    delete stream.client;
+
+    if (err) {
+        Serial.printf("[FETCH] ADSB.lol JSON parse error: %s\n", err.c_str());
+        doc.clear();
+        return false;
+    }
+    Serial.printf("[FETCH] ADSB.lol doc size=%d\n", doc.memoryUsage());
+
+    auto arr = doc["ac"];
+    if (!arr.is<JsonArray>()) {
+        Serial.println("[FETCH] ADSB.lol No 'ac' array in JSON");
+        doc.clear();
+        return false;
+    }
+
+    std::vector<std::pair<double, SimpleAircraft>> candidates;
+    candidates.reserve(arr.size());
+
+    int droppedNoPos = 0;
+    int droppedStale = 0;
+    for (size_t i = 0; i < arr.size(); i++) {
+        auto item = arr[i];
+        const char* hexVal = item["hex"];
+        if (!hexVal) continue;
+        String icao(hexVal);
+        if (icao.isEmpty()) continue;
+
+        double latVal = item["lat"] | 0.0;
+        double lonVal = item["lon"] | 0.0;
+        if (latVal == 0.0 && lonVal == 0.0) {
+            droppedNoPos++;
+            continue;
+        }
+
+        double dLat = latVal - (double)lat;
+        double dLon = (lonVal - (double)lon) * cos((double)lat * 0.0174533);
+        double distDegApprox = sqrt(dLat * dLat + dLon * dLon);
+        if (rad > 0.001f && distDegApprox > (double)rad) continue;
+
+        SimpleAircraft ac;
+        ac.icao      = icao;
+        ac.lat       = latVal;
+        ac.lon       = lonVal;
+        ac.altitude  = item["alt_baro"] | 0.0;
+        ac.heading   = item["track"] | 0.0;
+        if (isnan(ac.heading)) ac.heading = 0.0;
+        ac.groundspeed = item["gs"] | 0.0;
+        if (isnan(ac.groundspeed) || ac.groundspeed < 0.0f) ac.groundspeed = 0.0f;
+        ac.seen = item["seen"] | 0.0;
+        if (isnan(ac.seen) || ac.seen < 0.0f) ac.seen = 0.0f;
+        ac.seenPos = item["seen_pos"] | ac.seen;
+        if (isnan(ac.seenPos) || ac.seenPos < 0.0f) ac.seenPos = ac.seen;
+        const char* cat = item["category"];
+        ac.category = cat ? cat : "";
+        const char* sq = item["squawk"];
+        ac.squawk    = sq ? sq : "";
+        ac.rssi      = item["rssi"] | 0.0f;
+
+        // Drop stale aircraft (seen_pos > 30s at source)
+        if (ac.seenPos > 30.0f) {
+            droppedStale++;
+            continue;
+        }
+
+        candidates.push_back({distDegApprox, ac});
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    std::map<String, SimpleAircraft> next;
+    for (size_t i = 0; i < candidates.size() && i < MAX_AIRCRAFT; i++) {
+        const auto& ac = candidates[i].second;
+        next[ac.icao] = ac;
+    }
+
+    doc.clear();
+
+    // Merge: update existing aircraft with new data, add new ones
+    // Don't remove aircraft not in this fetch — they persist until feeder stops reporting
+    for (auto& [icao, ac] : next) {
+        trackedAircraft[icao] = ac;
+    }
+
+    GridLog("[FETCH] ADSB.lol OK");
+    return true;
+#else
+    (void)lat; (void)lon; (void)rad;
+    Serial.println("[FETCH] ADSB.lol: streaming not available on this platform");
+    return false;
+#endif
+}
+
+// ── Fetch airports from Overpass API (HTTP) ──
+void AircraftManager::FetchAirports(int timeout_ms)
+{
+    if (lat == 0.0f || lon == 0.0f || rad <= 0.001f) {
+        return;
+    }
+
+    // Convert range to meters (Overpass uses meters)
+    int rangeM = (int)(rad * 185200.0f);
+    if (rangeM < 1000) rangeM = 1000;
+    if (rangeM > 500000) rangeM = 500000;
+
+    // Build Overpass query — URL-encoded GET
+    // [out:json];node["aeroway"="aerodrome"](around:RANGE,LAT,LON);out center;
+    String url = "http://overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%3Bnode%5B%22aeroway%22%3D%22aerodrome%22%5D%28around%3A" +
+                 String(rangeM) + "," + String(lat, 6) + "," + String(lon, 6) +
+                 "%29%3Bout%20center%3B";
+
+    HttpResult result = http.Get(url);
+    if (!result.success) {
+        Serial.printf("[AIRPORTS] HTTP failed: status=%d\n", result.statusCode);
+        return;
+    }
+
+    // Parse JSON — static document to avoid fragmentation
+    static StaticJsonDocument<8192> doc;
+    doc.clear();
+    DeserializationError err = deserializeJson(doc, result.response);
+    if (err) {
+        Serial.printf("[AIRPORTS] JSON parse error: %s\n", err.c_str());
+        doc.clear();
+        return;
+    }
+
+    airports.clear();
+    auto elements = doc["elements"];
+    if (!elements.is<JsonArray>()) {
+        doc.clear();
+        return;
+    }
+
+    int onScreen = 0;
+    for (int i = 0; i < elements.size(); i++) {
+        auto item = elements[i];
+        float latVal = item["lat"] | 0.0f;
+        float lonVal = item["lon"] | 0.0f;
+        if (latVal == 0.0f && lonVal == 0.0f) continue;
+
+        auto proj = ProjectCoordinateToScreen(latVal, lonVal);
+        int sx = proj.first;
+        int sy = proj.second;
+        bool on = (sx > 0 && sx < 239 && sy > 0 && sy < 239);
+        if (on) onScreen++;
+
+        airports.push_back(AirportMarker(latVal, lonVal, sx, sy, on));
+    }
+
+    doc.clear();
+    Serial.printf("[AIRPORTS] Loaded %d airports (%d on-screen)\n", airports.size(), onScreen);
+}
+
+// ── Draw airport markers on the grid ──
+void AircraftManager::DrawAirportMarkers() const
+{
+    uint16_t color = 0xFFFF;  // White
+    for (const auto& ap : airports) {
+        if (!ap.onScreen) continue;
+        // Draw Y shape (runway symbol)
+        tft.drawLine(ap.sx, ap.sy - 3, ap.sx, ap.sy, color);        // Vertical stem
+        tft.drawLine(ap.sx, ap.sy, ap.sx - 2, ap.sy + 3, color);   // Left branch
+        tft.drawLine(ap.sx, ap.sy, ap.sx + 2, ap.sy + 3, color);   // Right branch
+    }
+}

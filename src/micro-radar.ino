@@ -1,14 +1,14 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFiManager.h>
-#include "src/PreferencesCompat.h"
+#include "PreferencesCompat.h"
 
-#include "src/LGFX.h"
-#include "src/WiFiManagerHelpers.h"
-#include "src/ConfigurationWebServer.h"
-#include "src/HttpRequestManager.h"
-#include "src/AircraftManager.h"
-#include "src/models/Aircraft.h"
+#include "LGFX.h"
+#include "WiFiManagerHelpers.h"
+#include "ConfigurationWebServer.h"
+#include "HttpRequestManager.h"
+#include "AircraftManager.h"
+#include "models/Aircraft.h"
 
 // Optional hard-coded Wi-Fi credentials. Leave both blank to skip pre-baking them and use the setup hotspot instead.
 const char* preconfiguredWifiSsid = "";
@@ -38,36 +38,37 @@ static void handleButtons()
     // Button 1: Theme toggle
     if (digitalRead(BTN_THEME_PIN) == LOW) {
         uint32_t now = millis();
-        if ((uint32_t)(now - lastBtnTheme) < BTN_DEBOUNCE_MS) return;
-        lastBtnTheme = now;
+        if ((uint32_t)(now - lastBtnTheme) >= BTN_DEBOUNCE_MS) {
+            lastBtnTheme = now;
 
-        bool nextAmber = !aircraftManager.IsAmber();  // Toggle current state directly
-        {
-            Preferences prefs;
-            prefs.begin("config", false);
-            prefs.putString("phosphor", nextAmber ? "amber" : "green");
-            prefs.end();
+            bool nextAmber = !aircraftManager.IsAmber();  // Toggle current state directly
+            {
+                Preferences prefs;
+                prefs.begin("config", false);
+                prefs.putString("phosphor", nextAmber ? "amber" : "green");
+                prefs.end();
+            }
+            aircraftManager.ApplyThemeChange(nextAmber);
+            Serial.printf("[BTN] Theme: %s\n", nextAmber ? "amber" : "green");
         }
-        aircraftManager.ApplyThemeChange(nextAmber);
-        Serial.printf("[BTN] Theme: %s\n", nextAmber ? "amber" : "green");
-        return;
     }
 
     // Button 2: Scan mode toggle
     if (digitalRead(BTN_MODE_PIN) == LOW) {
         uint32_t now = millis();
-        if ((uint32_t)(now - lastBtnMode) < BTN_DEBOUNCE_MS) return;
-        lastBtnMode = now;
+        if ((uint32_t)(now - lastBtnMode) >= BTN_DEBOUNCE_MS) {
+            lastBtnMode = now;
 
-        bool nextRadial = !aircraftManager.IsRadial();  // Toggle current state
-        {
-            Preferences prefs;
-            prefs.begin("config", false);
-            prefs.putString("scanmode", nextRadial ? "radial" : "angular");
-            prefs.end();
+            bool nextRadial = !aircraftManager.IsRadial();  // Toggle current state
+            {
+                Preferences prefs;
+                prefs.begin("config", false);
+                prefs.putString("scanmode", nextRadial ? "radial" : "angular");
+                prefs.end();
+            }
+            aircraftManager.ApplyModeChange(nextRadial);
+            Serial.printf("[BTN] Scan mode: %s\n", nextRadial ? "radial" : "angular");
         }
-        aircraftManager.ApplyModeChange(nextRadial);
-        Serial.printf("[BTN] Scan mode: %s\n", nextRadial ? "radial" : "angular");
     }
 }
 

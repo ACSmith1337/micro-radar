@@ -91,6 +91,9 @@ static ScanState scanState;
 static bool useAmber = false;  // Phosphor colour palette
 static ScanMode currentMode = ScanMode::ANGULAR;
 
+// ─── Shared JSON document (single 8KB BSS allocation) ───
+StaticJsonDocument<8192> AircraftManager::jsonDoc;
+
 // ─── Radial ping state ───
 static uint8_t pingRadius = 0;
 static uint8_t pingPhase = 0;  // 0=expand, 1=pause
@@ -166,6 +169,15 @@ static TargetGlyph GetTargetGlyph(const SimpleAircraft& ac)
     return TargetGlyph::UNKNOWN;
 }
 
+// ── Cache config values (avoids repeated Preferences reads per cycle) ──
+void AircraftManager::CacheConfig()
+{
+    cfgDataSource = configServer.GetStoredString("datasource");
+    cfgReadsbHost = configServer.GetStoredString("readsbhost");
+    cfgReadsbPort = configServer.GetStoredString("readsbport");
+    cfgReadsbPath = configServer.GetStoredString("readsbpath");
+}
+
 // ════════════════════════════════════════════════════════════
 
 void AircraftManager::Initialise()
@@ -187,6 +199,9 @@ void AircraftManager::Initialise()
     useAmber = configServer.GetStoredString("phosphor") == "amber";
 
     fetchInterval = FETCH_DEFAULT;
+
+    // Cache config values for fetch cycle
+    CacheConfig();
 
     const float outerNm = rad * 60.0f;
     ringLabelInner = FormatRangeNm(outerNm * ((float)RING_INNER_PX / (float)RING_OUTER_PX));
@@ -260,6 +275,9 @@ void AircraftManager::ReloadDisplayConfig()
     displayScanLine = configServer.GetStoredString("scanline") != "false";
     displayTrailDots = configServer.GetStoredString("trails") == "true";
     alertSquawk = configServer.GetStoredString("squawkalert") == "true";
+
+    // Refresh cached fetch config
+    CacheConfig();
 
     // ── Redraw everything with new config ──
     tft.fillScreen(CLR_BG);
@@ -351,6 +369,11 @@ void AircraftManager::Update()
             tft.drawCentreString("RADAR WARMUP", 120, 112, 1);
         }
 
+        // Fetch airports during warmup (blocking is fine — nothing else runs)
+        if (!airportsFetched) {
+            FetchAirports(5000);  // 5s timeout during warmup
+        }
+
         // Try aircraft sync every 1.5s
         if ((now - initialSyncLastAttempt) >= 1500 || (now - warmupStartMs) >= 10000) {
             initialSyncLastAttempt = now;
@@ -427,15 +450,15 @@ void AircraftManager::Update()
                     }
                     // North bright tick (y=4..14)
                     if (row >= 4 && row <= 14) tft.drawPixel(cx, row, ringBrightClr);
-                    // Labels
+                    // Labels — draw on row ranges so they survive the erase pass
                     tft.setTextColor(ringBrightClr);
                     tft.setTextSize(1);
                     if (row >= 0 && row <= 7) { tft.drawCentreString("N", cx, 2, 1); tft.drawCentreString("N", cx + 1, 2, 1); }
                     if (row >= 226 && row <= 235) { tft.drawCentreString("S", cx, 228, 1); tft.drawCentreString("S", cx + 1, 228, 1); }
                     if (row >= 115 && row <= 124) { tft.drawCentreString("E", 236, 117, 1); tft.drawCentreString("E", 237, 117, 1); tft.drawCentreString("W", 4, 117, 1); tft.drawCentreString("W", 5, 117, 1); }
-                    if (row >= 12 && row <= 19) tft.drawString(ringLabelOuter, cx + 6, 14, 1);
-                    if (row >= 49 && row <= 56) tft.drawString(ringLabelMid, cx + 6, 51, 1);
-                    if (row >= 86 && row <= 93) tft.drawString(ringLabelInner, cx + 6, 88, 1);
+                    if (row >= 12 && row <= 19) tft.drawString(ringLabelOuter.c_str(), cx + 6, 14, 1);
+                    if (row >= 49 && row <= 56) tft.drawString(ringLabelMid.c_str(), cx + 6, 51, 1);
+                    if (row >= 86 && row <= 93) tft.drawString(ringLabelInner.c_str(), cx + 6, 88, 1);
                     // Airport markers
                     for (const auto& ap : airports) {
                         if (ap.onScreen && ap.sy >= row - 3 && ap.sy <= row + 2) {
@@ -469,38 +492,32 @@ void AircraftManager::Update()
 
                 fadeInRow++;
             } else {
-                // Reveal complete — redraw clean
+                // Reveal complete — redraw clean grid only (labels/markers already in place)
                 fadeInComplete = true;
                 DrawRadarGrid();
-                DrawRadarLabels();
                 DrawAirportMarkers();
             }
         }
         return;
     }
 
-    // ── Fetch airports if not yet done (retry on failure) ──
-    if (!airportsFetched) {
-        uint32_t now = millis();
-        if (airportsFetchRetry == 0 || now >= airportsFetchRetry) {
-            FetchAirports(10000);  // 10s timeout, retry every 60s on failure
-            if (!airportsFetched) {
-                airportsFetchRetry = now + 60000;
-            }
-        }
-    }
-
     // ── Fetch once per rotation (or more often after failures) ──
+    // Exponential backoff: 10s → 5s → 10s → 5s on consecutive failures, max 5s
+    static uint8_t consecutiveFailures = 0;
     bool forceSync = AircraftManager::HasForceSyncRequested();
     if (millis() - lastRotation >= fetchInterval || forceSync) {
         if (forceSync) {
             AircraftManager::forceSyncRequested = false;
+            airportsFetched = false;  // Also refresh airports
             GridLog("[RADAR] Executing force sync");
         }
         lastRotation = millis();
         if (!RefreshAircraft()) {
-            fetchInterval = 5000;  // Fetch every 5s until success
+            consecutiveFailures++;
+            // Backoff: 5s on first failure, stay at 5s on repeated failures
+            fetchInterval = 5000;
         } else {
+            consecutiveFailures = 0;
             fetchInterval = FETCH_DEFAULT;  // Back to normal 10s
         }
     }
@@ -528,7 +545,21 @@ void AircraftManager::Update()
 // ── Called once per rotation ──
 bool AircraftManager::RefreshAircraft()
 {
-    String dataSource = configServer.GetStoredString("datasource");
+    // WiFi dropout detection
+    static bool wifiWasConnected = true;
+    if (WiFi.status() != WL_CONNECTED) {
+        if (wifiWasConnected) {
+            GridLog("[FETCH] WiFi disconnected — waiting for reconnection");
+            wifiWasConnected = false;
+        }
+        return false;
+    }
+    if (!wifiWasConnected) {
+        GridLog("[FETCH] WiFi reconnected");
+        wifiWasConnected = true;
+    }
+
+    String dataSource = cfgDataSource;
     if (dataSource.isEmpty()) dataSource = "local";
 
     bool fetchOk = false;
@@ -606,10 +637,10 @@ bool AircraftManager::RefreshAircraft()
 
         auto lpIt = lastPositions.find(icao);
         if (on) {
-            // New aircraft start at half brightness — beam will set to full on contact
+            // New aircraft start invisible — beam will make them visible on contact
             // Existing aircraft keep their current brightness and visible state
             if (lpIt == lastPositions.end()) {
-                lastPositions[icao] = {x, y, true, BRIGHTNESS_MAX / 2, ac.rssi};
+                lastPositions[icao] = {x, y, false, 0, ac.rssi};
             } else {
                 lpIt->second.x = x;
                 lpIt->second.y = y;
@@ -656,7 +687,7 @@ void AircraftManager::DecayAircraft()
         float steps = fadeDuration / 0.350f;
         float stepSize = (float)BRIGHTNESS_MAX / steps;
 
-        float& acc = decayAccumulators[icao];
+        float& acc = lp.decayAccum;
         acc += stepSize;
         while (acc >= 1.0f) {
             acc -= 1.0f;
@@ -666,7 +697,7 @@ void AircraftManager::DecayAircraft()
         if (lp.brightness == 0) {
             ErasePosition(lp.x, lp.y, AIRCRAFT_ERASE_RADIUS);
             lp.visible = false;
-            decayAccumulators.erase(icao);
+            lp.decayAccum = 0.0f;
         } else {
             // Draw decaying aircraft — brightness drives the visual fade
             auto acIt = trackedAircraft.find(icao);
@@ -681,10 +712,15 @@ void AircraftManager::DecayAircraft()
         }
     }
 
-    // Remove ghosts that have fully faded
+    // Remove ghosts that have fully faded OR vanished from feed >15s ago
     std::vector<String> gone;
+    uint32_t now = millis();
+    constexpr uint32_t GHOST_TIMEOUT_MS = 15000;  // Force-remove ghosts 15s after leaving feed
     for (auto& [icao, lp] : lastPositions) {
-        if (!lp.visible && lp.brightness == 0 && !trackedAircraft.count(icao)) {
+        bool isGhost = !trackedAircraft.count(icao);
+        bool faded = !lp.visible && lp.brightness == 0;
+        bool timedOut = isGhost && lp.vanishedMs > 0 && (now - lp.vanishedMs) > GHOST_TIMEOUT_MS;
+        if (faded || timedOut) {
             gone.push_back(icao);
         }
     }
@@ -701,7 +737,7 @@ struct AlertGlobals {
     static char textBuf[32];
     static bool active;
 };
-bool AlertGlobals::blinkOn = true;
+bool AlertGlobals::blinkOn = false;
 char AlertGlobals::icaoBuf[8] = {0};
 char AlertGlobals::textBuf[32] = {0};
 bool AlertGlobals::active = false;
@@ -713,6 +749,7 @@ void AircraftManager::UpdateAlertState(bool displayAlerts)
     static uint32_t lastCycle = 0;
     static int idx = 0;
     static char pool[16][8];
+    static bool initialised = false;
     constexpr uint32_t CYCLE_MS = 3000;
 
     int count = 0;
@@ -730,6 +767,11 @@ void AircraftManager::UpdateAlertState(bool displayAlerts)
 
     if (count > 0) {
         uint32_t now = millis();
+        if (!initialised) {
+            lastCycle = now;
+            lastBlink = now;
+            initialised = true;
+        }
         char* cur;
         if (count == 1) {
             cur = pool[0];
@@ -784,10 +826,20 @@ void AircraftManager::DrawAlertText(bool displayAlerts)
 }
 
 // ── Draw all aircraft blips with alert flash support ──
-void AircraftManager::DrawAllAircraft(bool displayAlerts)
+// drawnThisFrame: ICAOs already drawn this frame (beam hits) — skip to avoid double-draw
+void AircraftManager::DrawAllAircraft(bool displayAlerts, const std::vector<String>& drawnThisFrame)
 {
+    bool hasDrawn = !drawnThisFrame.empty();
     for (const auto& [icao, lp] : lastPositions) {
         if (!lp.visible || lp.brightness == 0) continue;
+        // Skip aircraft already drawn by beam hit this frame
+        if (hasDrawn) {
+            bool alreadyDrawn = false;
+            for (const auto& d : drawnThisFrame) {
+                if (d == icao) { alreadyDrawn = true; break; }
+            }
+            if (alreadyDrawn) continue;
+        }
         auto it = trackedAircraft.find(icao);
         if (it == trackedAircraft.end()) continue;
         if (displayAlerts && AlertGlobals::icaoBuf[0] != '\0' && strncmp(icao.c_str(), AlertGlobals::icaoBuf, 8) == 0) {
@@ -866,12 +918,16 @@ void AircraftManager::DrawRadarFrame()
     DrawAirportMarkers();
 
     // ── PPI beam-hit refresh ──
+    // Track which ICAOs were drawn this frame to avoid double-draw in DrawAllAircraft
+    std::vector<String> drawnThisFrame;
+    drawnThisFrame.reserve(MAX_AIRCRAFT);
+
     float touchHalfAngle = delta + (DEG1 * 2.0f);
     if (touchHalfAngle < (DEG1 * 4.0f)) touchHalfAngle = DEG1 * 4.0f;
     if (touchHalfAngle > (DEG1 * 12.0f)) touchHalfAngle = DEG1 * 12.0f;
     // Avoid sqrtf: compare (dot·d)² >= d² × cos² instead of dot >= cos
     float beamTouchCos = cosf(touchHalfAngle);
-    float beamTouchCos2 = beamTouchCos * beamTouchCos;  // cos²(θ)
+    float beamTouchCos2 = beamTouchCos * beamTouchCos;
     for (auto& [icao, lp] : lastPositions) {
         int vx = lp.x - cx;
         int vy = cy - lp.y;
@@ -889,7 +945,8 @@ void AircraftManager::DrawRadarFrame()
         if (dot2 >= d2 * beamTouchCos2) {
             lp.brightness = BRIGHTNESS_MAX;
             lp.visible = true;
-            decayAccumulators[icao] = 0.0f;
+            lp.decayAccum = 0.0f;
+            drawnThisFrame.push_back(icao);
             auto it = trackedAircraft.find(icao);
             if (it != trackedAircraft.end()) {
                 DrawAircraftBlip(lp.x, lp.y, it->second, lp.brightness);
@@ -904,17 +961,15 @@ void AircraftManager::DrawRadarFrame()
 
     // ── Alert update + draw ──
     UpdateAlertState(alertSquawk);
-    DrawAllAircraft(alertSquawk);
+    DrawAllAircraft(alertSquawk, drawnThisFrame);
     DrawAlertText(alertSquawk);
 }
 
 // ── Draw phosphor trail ──
 void AircraftManager::DrawTrail(int cx, int cy, int r, float headC, float headS)
 {
-    constexpr float STEP = TRAIL_STEP_DEG * 0.0174533f;
     constexpr float STEP_C = 0.9986295f;  // cos(3°) precomputed
     constexpr float STEP_S = 0.0523360f;  // sin(3°) precomputed
-    (void)STEP;  // kept for reference
     const uint16_t* gradient = PalTrailGradient(useAmber);
 
     float prevC = headC;
@@ -964,7 +1019,7 @@ void AircraftManager::DrawRadarPing(int cx, int cy, int r)
                 if (d2 >= rMin2 && d2 <= rMax2) {
                     lp.brightness = BRIGHTNESS_MAX;
                     lp.visible = true;  // Re-illuminate faded aircraft
-                    decayAccumulators[icao] = 0.0f;  // Reset decay accumulator
+                    lp.decayAccum = 0.0f;  // Reset decay accumulator
                 }
             }
 
@@ -984,17 +1039,12 @@ void AircraftManager::DrawRadarPing(int cx, int cy, int r)
         }
     }
 
-    // ── Draw: erase previous ring, then draw grid + labels + ring ──
+    // ── Draw: erase previous ring, then draw current ring ──
     if (prevRadius > 0 && prevRadius <= PING_MAX_RADIUS + 2) {
         tft.drawCircle(cx, cy, prevRadius, CLR_BG);
         tft.drawCircle(cx, cy, prevRadius + 1, CLR_BG);
         tft.drawCircle(cx, cy, prevRadius + 2, CLR_BG);
     }
-
-    // Redraw grid + labels + airports every frame so ring erase doesn't corrupt them
-    DrawRadarGrid();
-    DrawRadarLabels();
-    DrawAirportMarkers();
 
     // ── Draw single ring at current radius (3px thick, no persistence) ──
     if (pingPhase == 0 && pingRadius > 0) {
@@ -1037,9 +1087,11 @@ void AircraftManager::DrawRadarGrid() const
     tft.drawLine(cx, cy - 106, cx, cy - 116, PalRingBright(useAmber));
 }
 
+#if defined(ARDUINO_ARCH_ESP8266)
 void AircraftManager::Draw(LGFX& /*buf*/)
 {
 }
+#endif
 
 // ── Fade color toward black ──
 // Precomputed LUT: 25 levels (0..24) × 256 possible base colors = too big
@@ -1049,7 +1101,7 @@ void AircraftManager::Draw(LGFX& /*buf*/)
 // Simpler: just scale component by level/BRIGHTNESS_MAX using a small multiplier table.
 // fadeScale[level] = (level * 256 + BRIGHTNESS_MAX/2) / BRIGHTNESS_MAX  (fixed-point ×256)
 // result = (component * fadeScale[level]) >> 8  — one multiply, one shift
-static const uint8_t fadeScale[25] = {
+static const uint16_t fadeScale[25] = {
     0, 10, 21, 32, 43, 53, 64, 75, 85, 96, 107, 117, 128, 139, 149, 160, 171, 181, 192, 203, 213, 224, 235, 245, 256
 };
 
@@ -1057,7 +1109,7 @@ static inline uint16_t FadeColor(uint16_t base, uint8_t level)
 {
     if (level <= 0) return CLR_BG;
     if (level >= BRIGHTNESS_MAX) return base;
-    uint8_t s = fadeScale[level];
+    uint16_t s = fadeScale[level];
     uint16_t r5 = (base >> 11) & 0x1F;
     uint16_t g6 = (base >> 5) & 0x3F;
     uint16_t b5 = base & 0x1F;
@@ -1138,7 +1190,7 @@ void AircraftManager::DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, u
                 TrailPt pts[TRAIL_WAYPOINTS_MAX];
                 int pCount = 0;
                 for (int n = 0; n < hist.count; n++) {
-                    int idx = (hist.head - hist.count + n + TRAIL_WAYPOINTS_MAX) % TRAIL_WAYPOINTS_MAX;
+                    int idx = ((hist.head - hist.count + n) % TRAIL_WAYPOINTS_MAX + TRAIL_WAYPOINTS_MAX) % TRAIL_WAYPOINTS_MAX;
                     const auto& tp = hist.points[idx];
                     float ageSec = (float)(now - tp.timestamp) / 1000.0f;
                     float fade = 1.0f - (ageSec / 600.0f);
@@ -1234,17 +1286,17 @@ std::pair<int, int> AircraftManager::ProjectCoordinateToScreen(float lat2, float
 
 bool AircraftManager::FetchLocal()
 {
-    String host = configServer.GetStoredString("readsbhost");
+    String host = cfgReadsbHost;
     if (host.isEmpty()) {
         static int warnCount = 0;
         if (++warnCount <= 3) Serial.println("[FETCH] No readsb host configured");
         return false;
     }
 
-    String port = configServer.GetStoredString("readsbport");
+    String port = cfgReadsbPort;
     if (port.isEmpty()) port = "8080";
 
-    String path = configServer.GetStoredString("readsbpath");
+    String path = cfgReadsbPath;
     if (path.isEmpty()) path = "/data/aircraft.json";
 
     String url = "http://" + host + ":" + port + path;
@@ -1266,20 +1318,19 @@ bool AircraftManager::FetchLocal()
         return false;
     }
 
-    // Use static document with fixed capacity to avoid heap fragmentation
-    static StaticJsonDocument<8192> doc;
-    doc.clear();
-    DeserializationError err = deserializeJson(doc, result.response);
+    // Use shared document to avoid multiple 8KB BSS allocations
+    jsonDoc.clear();
+    DeserializationError err = deserializeJson(jsonDoc, result.response);
     if (err) {
         GridLog("[FETCH] JSON parse error");
-        doc.clear();
+        jsonDoc.clear();
         return false;
     }
 
-    auto arr = doc["aircraft"];
+    auto arr = jsonDoc["aircraft"];
     if (!arr.is<JsonArray>()) {
         Serial.println("[FETCH] No 'aircraft' array in JSON");
-        doc.clear();
+        jsonDoc.clear();
         return false;
     }
 
@@ -1344,12 +1395,30 @@ bool AircraftManager::FetchLocal()
         next[ac.icao] = ac;
     }
 
-    doc.clear();
+    jsonDoc.clear();
 
     // Merge: update existing aircraft with new data, add new ones
-    // Don't remove aircraft not in this fetch — they persist until feeder stops reporting
+    // Remove aircraft that left the feed, stamp vanishedMs on their draw positions
+    uint32_t now = millis();
+    std::vector<String> removed;
+    for (auto& [icao, ac] : trackedAircraft) {
+        if (!next.count(icao)) {
+            removed.push_back(icao);
+        }
+    }
+    for (auto& icao : removed) {
+        auto lpIt = lastPositions.find(icao);
+        if (lpIt != lastPositions.end() && lpIt->second.vanishedMs == 0) {
+            lpIt->second.vanishedMs = now;
+        }
+        trackedAircraft.erase(icao);
+    }
     for (auto& [icao, ac] : next) {
         trackedAircraft[icao] = ac;
+        auto lpIt = lastPositions.find(icao);
+        if (lpIt != lastPositions.end()) {
+            lpIt->second.vanishedMs = 0;  // Still in feed
+        }
     }
 
     GridLog("[FETCH] OK");
@@ -1382,24 +1451,23 @@ bool AircraftManager::FetchAdsblol()
         return false;
     }
 
-    // Use static document with fixed capacity to avoid heap fragmentation
-    static StaticJsonDocument<8192> doc;
-    doc.clear();
-    DeserializationError err = deserializeJson(doc, *stream.client);
+    // Use shared document to avoid multiple 8KB BSS allocations
+    jsonDoc.clear();
+    DeserializationError err = deserializeJson(jsonDoc, *stream.client);
     stream.client->stop();
     delete stream.client;
 
     if (err) {
         Serial.printf("[FETCH] ADSB.lol JSON parse error: %s\n", err.c_str());
-        doc.clear();
+        jsonDoc.clear();
         return false;
     }
-    Serial.printf("[FETCH] ADSB.lol doc size=%d\n", doc.memoryUsage());
+    Serial.printf("[FETCH] ADSB.lol doc size=%d\n", jsonDoc.memoryUsage());
 
-    auto arr = doc["ac"];
+    auto arr = jsonDoc["ac"];
     if (!arr.is<JsonArray>()) {
         Serial.println("[FETCH] ADSB.lol No 'ac' array in JSON");
-        doc.clear();
+        jsonDoc.clear();
         return false;
     }
 
@@ -1464,12 +1532,30 @@ bool AircraftManager::FetchAdsblol()
         next[ac.icao] = ac;
     }
 
-    doc.clear();
+    jsonDoc.clear();
 
     // Merge: update existing aircraft with new data, add new ones
-    // Don't remove aircraft not in this fetch — they persist until feeder stops reporting
+    // Remove aircraft that left the feed, stamp vanishedMs on their draw positions
+    uint32_t now = millis();
+    std::vector<String> removed;
+    for (auto& [icao, ac] : trackedAircraft) {
+        if (!next.count(icao)) {
+            removed.push_back(icao);
+        }
+    }
+    for (auto& icao : removed) {
+        auto lpIt = lastPositions.find(icao);
+        if (lpIt != lastPositions.end() && lpIt->second.vanishedMs == 0) {
+            lpIt->second.vanishedMs = now;
+        }
+        trackedAircraft.erase(icao);
+    }
     for (auto& [icao, ac] : next) {
         trackedAircraft[icao] = ac;
+        auto lpIt = lastPositions.find(icao);
+        if (lpIt != lastPositions.end()) {
+            lpIt->second.vanishedMs = 0;  // Still in feed
+        }
     }
 
     GridLog("[FETCH] ADSB.lol OK");
@@ -1505,20 +1591,19 @@ void AircraftManager::FetchAirports(int timeout_ms)
         return;
     }
 
-    // Parse JSON — static document to avoid fragmentation
-    static StaticJsonDocument<8192> doc;
-    doc.clear();
-    DeserializationError err = deserializeJson(doc, result.response);
+    // Parse JSON — shared document (single 8KB BSS allocation)
+    jsonDoc.clear();
+    DeserializationError err = deserializeJson(jsonDoc, result.response);
     if (err) {
         Serial.printf("[AIRPORTS] JSON parse error: %s\n", err.c_str());
-        doc.clear();
+        jsonDoc.clear();
         return;
     }
 
     airports.clear();
-    auto elements = doc["elements"];
+    auto elements = jsonDoc["elements"];
     if (!elements.is<JsonArray>()) {
-        doc.clear();
+        jsonDoc.clear();
         return;
     }
 
@@ -1538,7 +1623,8 @@ void AircraftManager::FetchAirports(int timeout_ms)
         airports.push_back(AirportMarker(latVal, lonVal, sx, sy, on));
     }
 
-    doc.clear();
+    jsonDoc.clear();
+    airportsFetched = true;
     Serial.printf("[AIRPORTS] Loaded %d airports (%d on-screen)\n", airports.size(), onScreen);
 }
 

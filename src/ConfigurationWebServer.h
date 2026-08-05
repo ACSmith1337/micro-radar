@@ -38,6 +38,7 @@ class ConfigurationWebServer {
 private:
     AsyncWebServer* server;
     Preferences prefs;
+    bool reloadRequested = false;
 
 public:
     ConfigurationWebServer() : server(new AsyncWebServer(80)), prefs() {}
@@ -47,6 +48,7 @@ public:
     void HandleClient() {} // No-op for AsyncWebServer
     [[nodiscard]] const String GetStoredString(const char* key);
     void RequestReload();
+    bool HasReloadRequested() { bool r = reloadRequested; reloadRequested = false; return r; }
 };
 
 #elif defined(ARDUINO_ARCH_ESP8266)

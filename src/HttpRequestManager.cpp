@@ -223,8 +223,8 @@ HttpResult HttpRequestManager::Get(const String& url, const std::vector<std::pai
     }
 
     if (timeout_ms > 0) {
-        http.setConnectionTimeout((uint32_t)timeout_ms);
-        http.setReceiveTimeout((uint32_t)timeout_ms);
+        http.setConnectTimeout((uint32_t)timeout_ms);
+        http.setTimeout((uint32_t)timeout_ms);
     }
 
     int responseCode = http.GET();

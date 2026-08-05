@@ -1,17 +1,13 @@
 #pragma once
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <map>
 #include <vector>
 #include <string>
 
 // Include display library based on platform
-#if defined(ARDUINO_ARCH_ESP32)
-#include <LovyanGFX.hpp>
-
-#elif defined(ARDUINO_ARCH_ESP8266)
-#include "LGFX.h"  // ESP8266-compatible TFT_eSPI wrapper
-#endif
+#include "LGFX.h"  // LGFX class definition (ESP32 and ESP8266)
 
 #include "HttpRequestManager.h"
 #include "ConfigurationWebServer.h"
@@ -38,6 +34,8 @@ struct DrawPosition {
     bool visible;
     uint8_t brightness = 24;  // PPI persistence: 24=max, decays to 0
     float rssi = 0.0f;        // last known RSSI (for ghost fade duration)
+    float decayAccum = 0.0f;  // per-aircraft decay accumulator (avoids map lookup)
+    uint32_t vanishedMs = 0;  // millis() when aircraft left the feed (0 = still tracked)
 };
 
 // ─── Airport marker ──
@@ -135,12 +133,14 @@ private:
     std::map<String, SimpleAircraft> trackedAircraft;
     std::map<String, DrawPosition> lastPositions;
     std::map<String, TrailHistory> trailHistories;  // per-aircraft position history
-    std::map<String, float> decayAccumulators;      // per-aircraft decay accumulator
 
     // Airport markers
     std::vector<AirportMarker> airports;
     void FetchAirports(int timeout_ms = 30000);
     void DrawAirportMarkers() const;
+
+    // Shared JSON document (avoids 3× 8KB BSS allocation)
+    static StaticJsonDocument<8192> jsonDoc;
 
     // Drawing
     void DrawRadarGrid() const;
@@ -155,11 +155,18 @@ private:
     void DrawAircraftBlip(int x, int y, const SimpleAircraft& ac, uint8_t brightness, uint16_t overrideColor) const;
     void UpdateAlertState(bool displayAlerts);
     void DrawAlertText(bool displayAlerts);
-    void DrawAllAircraft(bool displayAlerts);
+    void DrawAllAircraft(bool displayAlerts, const std::vector<String>& drawnThisFrame = {});
     std::pair<int, int> ProjectCoordinateToScreen(float predLat, float predLon) const;
 
     bool FetchLocal();
     bool FetchAdsblol();
+
+    // Cached config values (avoids repeated Preferences reads per cycle)
+    String cfgDataSource;
+    String cfgReadsbHost;
+    String cfgReadsbPort;
+    String cfgReadsbPath;
+    void CacheConfig();  // Read all config values from Preferences into cache
 
     // External references
     ConfigurationWebServer& configServer;

@@ -3,7 +3,7 @@
 
 #if defined(ARDUINO_ARCH_ESP32)
 // ──────────────────────────────────────────────
-// ESP32-C3 (original config)
+// ESP32-C3 (original config) — modern LovyanGFX API
 // ──────────────────────────────────────────────
 class LGFX : public lgfx::LGFX_Device
 {
@@ -15,29 +15,24 @@ public:
     LGFX(void)
     {
         {
-            auto& bus = _bus.config();
-            bus.platform = 2;
-            bus.spi_host = VSPI_HOST;
-            bus.spi_mode = 0;
-            bus.freq_write = 40000000;
-            bus.freq_read = 6000000;
-            bus.spi_3wire = true;
-            bus.spi_half_duplex = true;
-            bus.shared = true;
-
-            bus.pin_sclk = 18;
-            bus.pin_mosi = 19;
-            bus.pin_miso = 8;
-            bus.pin_cs = 7;
-            bus.pin_dc = 6;
+            auto cfg = _bus.config();
+            cfg.spi_host = SPI2_HOST;
+            cfg.use_lock = true;
+            cfg.freq_write = 40000000;
+            cfg.freq_read = 6000000;
+            cfg.spi_mode = 0;
+            cfg.spi_3wire = true;
+            cfg.pin_sclk = 18;
+            cfg.pin_mosi = 19;
+            cfg.pin_miso = 8;
+            cfg.pin_dc = 6;
+            _bus.config(cfg);
         }
-        _bus.attachSPI(lgfx::getSPI(2));
 
         {
-            auto& cfg = _panel.config();
-            cfg.pin_reset = 10;
-            cfg.pin_backlight = 21;
-            cfg.backlight_on_active = false;
+            auto cfg = _panel.config();
+            cfg.pin_cs = 7;
+            cfg.pin_rst = 10;
             cfg.memory_width = 240;
             cfg.memory_height = 240;
             cfg.panel_width = 240;
@@ -45,15 +40,20 @@ public:
             cfg.offset_x = 0;
             cfg.offset_y = 0;
             cfg.offset_rotation = 2;
-            cfg.read_color_565 = true;
+            cfg.dlen_16bit = true;
             cfg.bus_shared = true;
+            _panel.config(cfg);
         }
 
-        _light.config();
-        _light.pin_init();
-        _light.pin_setter(0);
-        _panel.attachLight(&_light);
+        {
+            auto cfg = _light.config();
+            cfg.pin_bl = 21;
+            cfg.invert = false;
+            _light.config(cfg);
+        }
 
+        _panel.setBus(&_bus);
+        _panel.setLight(&_light);
         setPanel(&_panel);
     }
 };

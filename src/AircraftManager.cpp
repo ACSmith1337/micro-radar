@@ -176,6 +176,11 @@ void AircraftManager::CacheConfig()
     cfgReadsbHost = configServer.GetStoredString("readsbhost");
     cfgReadsbPort = configServer.GetStoredString("readsbport");
     cfgReadsbPath = configServer.GetStoredString("readsbpath");
+    String cfgInterval = configServer.GetStoredString("fetchinterval");
+    if (!cfgInterval.isEmpty()) {
+        int secs = (int)cfgInterval.toFloat();
+        if (secs > 0) fetchInterval = (uint32_t)secs * 1000;
+    }
 }
 
 // ════════════════════════════════════════════════════════════
@@ -450,15 +455,15 @@ void AircraftManager::Update()
                     }
                     // North bright tick (y=4..14)
                     if (row >= 4 && row <= 14) tft.drawPixel(cx, row, ringBrightClr);
-                    // Labels — draw on row ranges so they survive the erase pass
+                    // Labels — draw only on the exact target row (no redundant redraws)
                     tft.setTextColor(ringBrightClr);
                     tft.setTextSize(1);
-                    if (row >= 0 && row <= 7) { tft.drawCentreString("N", cx, 2, 1); tft.drawCentreString("N", cx + 1, 2, 1); }
-                    if (row >= 226 && row <= 235) { tft.drawCentreString("S", cx, 228, 1); tft.drawCentreString("S", cx + 1, 228, 1); }
-                    if (row >= 115 && row <= 124) { tft.drawCentreString("E", 236, 117, 1); tft.drawCentreString("E", 237, 117, 1); tft.drawCentreString("W", 4, 117, 1); tft.drawCentreString("W", 5, 117, 1); }
-                    if (row >= 12 && row <= 19) tft.drawString(ringLabelOuter.c_str(), cx + 6, 14, 1);
-                    if (row >= 49 && row <= 56) tft.drawString(ringLabelMid.c_str(), cx + 6, 51, 1);
-                    if (row >= 86 && row <= 93) tft.drawString(ringLabelInner.c_str(), cx + 6, 88, 1);
+                    if (row == 2) { tft.drawCentreString("N", cx, 2, 1); tft.drawCentreString("N", cx + 1, 2, 1); }
+                    if (row == 228) { tft.drawCentreString("S", cx, 228, 1); tft.drawCentreString("S", cx + 1, 228, 1); }
+                    if (row == 117) { tft.drawCentreString("E", 236, 117, 1); tft.drawCentreString("E", 237, 117, 1); tft.drawCentreString("W", 4, 117, 1); tft.drawCentreString("W", 5, 117, 1); }
+                    if (row == 14) tft.drawString(ringLabelOuter.c_str(), cx + 6, 14, 1);
+                    if (row == 51) tft.drawString(ringLabelMid.c_str(), cx + 6, 51, 1);
+                    if (row == 88) tft.drawString(ringLabelInner.c_str(), cx + 6, 88, 1);
                     // Airport markers
                     for (const auto& ap : airports) {
                         if (ap.onScreen && ap.sy >= row - 3 && ap.sy <= row + 2) {
@@ -519,6 +524,16 @@ void AircraftManager::Update()
         } else {
             consecutiveFailures = 0;
             fetchInterval = FETCH_DEFAULT;  // Back to normal 10s
+        }
+    }
+
+    // ── Retry airport fetch if it failed during warmup ──
+    if (!airportsFetched) {
+        static uint32_t lastAirportRetry = 0;
+        uint32_t now = millis();
+        if (now - lastAirportRetry >= 30000) {  // Retry every 30s
+            lastAirportRetry = now;
+            FetchAirports(10000);  // 10s timeout for retries
         }
     }
 
@@ -818,6 +833,8 @@ void AircraftManager::UpdateAlertState(bool displayAlerts)
 void AircraftManager::DrawAlertText(bool displayAlerts)
 {
     if (displayAlerts && AlertGlobals::textBuf[0] != '\0') {
+        // Clear previous text to avoid artifact when cycling alerts of different lengths
+        tft.fillRect(80, 214, 80, 12, CLR_BG);
         uint16_t col = AlertGlobals::blinkOn ? CLR_ALERT : CLR_RING_BRIGHT_A;
         tft.setTextColor(col, CLR_BG);
         tft.setTextSize(1);
@@ -912,10 +929,15 @@ void AircraftManager::DrawRadarFrame()
         tft.drawLine(x1, y1, x2, y2, CLR_BG);
     }
 
-    // ── Grid + labels + airports ──
-    DrawRadarGrid();
-    DrawRadarLabels();
-    DrawAirportMarkers();
+    // ── Grid + labels + airports (redraw once per rotation, not every frame) ──
+    // Trail covers ~6° per step; after ~60 steps (360°) the full grid is erased.
+    static uint32_t lastGridRedraw = 0;
+    if (nowMs - lastGridRedraw >= ROTATION_MS) {
+        DrawRadarGrid();
+        DrawRadarLabels();
+        DrawAirportMarkers();
+        lastGridRedraw = nowMs;
+    }
 
     // ── PPI beam-hit refresh ──
     // Track which ICAOs were drawn this frame to avoid double-draw in DrawAllAircraft
